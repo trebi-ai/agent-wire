@@ -83,8 +83,11 @@ type openCodeServer struct {
 	refs     int
 	idle     *time.Timer
 	sessions map[string]*openCodeSession
-	stream   context.CancelFunc
-	stopped  bool
+	// streams holds one /event connection per session directory. OpenCode
+	// scopes its event bus by directory, so a stream opened without one never
+	// sees a session that runs in another directory.
+	streams map[string]context.CancelFunc
+	stopped bool
 }
 
 // baseURL is the loopback origin.
@@ -131,12 +134,12 @@ func (s *openCodeServer) stop() {
 		return
 	}
 	s.stopped = true
-	cancel := s.stream
-	s.stream = nil
+	streams := s.streams
+	s.streams = nil
 	sessions := s.sessions
 	s.sessions = map[string]*openCodeSession{}
 	s.mu.Unlock()
-	if cancel != nil {
+	for _, cancel := range streams {
 		cancel()
 	}
 	for _, sess := range sessions {
@@ -184,23 +187,33 @@ func (s *openCodeServer) allSessions() []*openCodeSession {
 
 // ensureStream starts the single event stream this server needs, whatever the
 // number of sessions on it.
-func (s *openCodeServer) ensureStream() {
+// ensureStream keeps one /event connection open for a session directory.
+// OpenCode publishes a session's events only to a stream opened for the same
+// directory, so the stream is keyed by directory, not by server.
+func (s *openCodeServer) ensureStream(directory string) {
 	s.mu.Lock()
-	if s.stream != nil || s.stopped {
+	if s.stopped {
+		s.mu.Unlock()
+		return
+	}
+	if s.streams == nil {
+		s.streams = map[string]context.CancelFunc{}
+	}
+	if _, ok := s.streams[directory]; ok {
 		s.mu.Unlock()
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	s.stream = cancel
+	s.streams[directory] = cancel
 	s.mu.Unlock()
-	go s.streamLoop(ctx)
+	go s.streamLoop(ctx, directory)
 }
 
 // streamLoop keeps one /event connection alive and routes frames by session.
-func (s *openCodeServer) streamLoop(ctx context.Context) {
+func (s *openCodeServer) streamLoop(ctx context.Context, directory string) {
 	backoff := openCodeStreamRetryMin
 	for ctx.Err() == nil {
-		err := s.readStream(ctx)
+		err := s.readStream(ctx, directory)
 		if ctx.Err() != nil {
 			return
 		}
@@ -225,13 +238,20 @@ func (s *openCodeServer) streamLoop(ctx context.Context) {
 	}
 }
 
-// readStream reads /event until the connection ends.
-func (s *openCodeServer) readStream(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.baseURL()+"/event", nil)
+// readStream reads /event for one directory until the connection ends.
+func (s *openCodeServer) readStream(ctx context.Context, directory string) error {
+	streamURL := s.baseURL() + "/event"
+	if directory != "" {
+		streamURL += "?" + url.Values{"directory": {directory}}.Encode()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, streamURL, nil)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Accept", "text/event-stream")
+	if directory != "" {
+		req.Header.Set("x-opencode-directory", directory)
+	}
 	req.SetBasicAuth(s.username, s.password)
 	resp, err := (&http.Client{}).Do(req)
 	if err != nil {
@@ -494,7 +514,6 @@ func (m *openCodeManager) startServer(ctx context.Context, key, bin string, env 
 		if m.rt.led != nil {
 			m.rt.led.Track("opencode:"+key, string(OpenCode), p.PID(), p.Pgid(), s.argv)
 		}
-		s.ensureStream()
 		return s, nil
 	}
 	return nil, lastErr

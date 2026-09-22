@@ -23,6 +23,17 @@ type coaTestSSE struct {
 
 	readyOnce sync.Once
 	stopOnce  sync.Once
+
+	mu sync.Mutex
+	// dirs records the directory of every /event request, in order.
+	dirs []string
+}
+
+// streamDirs returns the directory of every /event request seen so far.
+func (h *coaTestSSE) streamDirs() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.dirs...)
 }
 
 // coaTestNewSSE builds an event hub with no subscriber.
@@ -65,6 +76,9 @@ func (h *coaTestSSE) push(t *testing.T, typ string, props map[string]any) {
 
 // serve streams the pushed frames until the client goes away.
 func (h *coaTestSSE) serve(w http.ResponseWriter, r *http.Request) {
+	h.mu.Lock()
+	h.dirs = append(h.dirs, r.URL.Query().Get("directory"))
+	h.mu.Unlock()
 	flusher, _ := w.(http.Flusher)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
@@ -165,7 +179,7 @@ func (oc *coaTestOpenCode) session(id, directory, instructions, model, variant s
 		parts: map[string]int{}, roles: map[string]string{}, partOwner: map[string]string{},
 	}
 	oc.route.subscribe(s)
-	oc.route.ensureStream()
+	oc.route.ensureStream(directory)
 	go s.pump()
 	return s
 }
@@ -386,5 +400,43 @@ func TestOpenCodePromptBody(t *testing.T) {
 	last, _ := parts[len(parts)-1].(map[string]any)
 	if last["type"] != "text" || last["text"] != "hello" {
 		t.Fatalf("first prompt text part: %+v", last)
+	}
+}
+
+// TestOpenCodeStreamIsDirectoryScoped pins the OpenCode event-bus scope: the
+// /event stream is scoped by directory, so a stream opened without one never
+// delivers a session that runs in another directory, and the session hangs
+// with no events at all. One stream is kept per directory on the server.
+func TestOpenCodeStreamIsDirectoryScoped(t *testing.T) {
+	oc := coaTestNewOpenCode(t, coaTestRuntime())
+
+	oc.route.ensureStream("/tmp/aw-proj-one")
+	oc.sse.wait(t)
+	oc.route.ensureStream("/tmp/aw-proj-two")
+	oc.route.ensureStream("/tmp/aw-proj-one") // already open: no second stream
+
+	deadline := time.After(3 * time.Second)
+	for {
+		if len(oc.sse.streamDirs()) >= 2 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("got %d /event streams, want 2", len(oc.sse.streamDirs()))
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	dirs := oc.sse.streamDirs()
+	if len(dirs) != 2 {
+		t.Fatalf("got %d /event streams %q, want one per directory", len(dirs), dirs)
+	}
+	if dirs[0] != "/tmp/aw-proj-one" || dirs[1] != "/tmp/aw-proj-two" {
+		t.Fatalf("stream directories are %q, want [/tmp/aw-proj-one /tmp/aw-proj-two]", dirs)
+	}
+	for _, d := range dirs {
+		if d == "" {
+			t.Fatal("an /event stream was opened without a directory")
+		}
 	}
 }

@@ -243,12 +243,27 @@ func liveTestReady(t *testing.T, rt *agentwire.Runtime, h agentwire.Harness) age
 
 // liveTestRequest builds a session request for one harness: a temp working
 // directory, the user's own login, and permissions the tier answers itself.
+//
+// AGENTWIRE_LIVE_MODEL_<HARNESS> (or AGENTWIRE_LIVE_MODEL for every harness)
+// pins the model. Set it when the harness default is unavailable on this
+// machine, for example an OpenCode config whose provider is out of credits:
+// the tier then measures the library, not the account.
 func liveTestRequest(h agentwire.Harness, dir string) agentwire.StartRequest {
 	return agentwire.StartRequest{
 		Harness:     h,
 		WorkingDir:  dir,
+		Model:       liveTestModel(h),
 		Permissions: agentwire.PermissionPolicy{Mode: agentwire.PermissionAuto},
 	}
+}
+
+// liveTestModel reads the model override for one harness.
+func liveTestModel(h agentwire.Harness) string {
+	name := strings.ToUpper(strings.ReplaceAll(string(h), "-", "_"))
+	if m := strings.TrimSpace(os.Getenv("AGENTWIRE_LIVE_MODEL_" + name)); m != "" {
+		return m
+	}
+	return strings.TrimSpace(os.Getenv("AGENTWIRE_LIVE_MODEL"))
 }
 
 // liveTestStart starts one session and registers its close.

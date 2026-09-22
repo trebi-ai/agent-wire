@@ -30,6 +30,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Classification. A bare HTTP status number (`401`, `429`, `503`) matches only in error context, so ordinary prose such as "I read 429 files" no longer classifies as a limit error.
 - Claude never received `--permission-prompt-tool stdio`, so the CLI answered prompts itself and never sent `can_use_tool`. The flag is now part of the permission policy, and it is kept in every mode, including `inherit`.
 - OpenCode: the session's done channel was never created, so every finished session panicked while closing it.
+- OpenCode: the `/event` stream was opened once per server with no directory, but OpenCode scopes its event bus by directory. A session whose working directory differed from the server's received no events at all and hung until the caller gave up. The stream is now opened per session directory, before the session is created.
+- The live tier takes `AGENTWIRE_LIVE_MODEL_<HARNESS>` (or `AGENTWIRE_LIVE_MODEL`) to pin a model, so the gate measures the library and not an unavailable account default.
 - Codex: an app-server request for a method the library cannot answer is refused with `-32601` instead of being turned into a permission event the peer cannot use.
 - `Runtime.Detect` reports the fake harness as always supported. It has no vendor binary and no login, so it can never be "not installed".
 - The `.cmd`/`.bat` shim refusal moved into portable code, so the message is the same on every platform and the check is compiled everywhere.

@@ -33,6 +33,10 @@ func (d openCodeDriver) start(ctx context.Context, req StartRequest, resume bool
 		return nil, err
 	}
 	dir := req.WorkingDir
+	// Subscribe to the directory's event stream before the session exists:
+	// OpenCode drops every event published before a stream is connected, and
+	// the caller cannot prompt until this call returns.
+	srv.ensureStream(dir)
 	sessionID := req.SessionID
 	if sessionID != "" {
 		var info map[string]any
@@ -64,7 +68,6 @@ func (d openCodeDriver) start(ctx context.Context, req StartRequest, resume bool
 		partOwner: map[string]string{},
 	}
 	srv.subscribe(s)
-	srv.ensureStream()
 	go s.pump()
 	d.rt.bindSession(s, l)
 	return s, nil
