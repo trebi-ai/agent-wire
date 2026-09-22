@@ -38,6 +38,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Codex: an app-server request for a method the library cannot answer is refused with `-32601` instead of being turned into a permission event the peer cannot use.
 - `Runtime.Detect` reports the fake harness as always supported. It has no vendor binary and no login, so it can never be "not installed".
 - The `.cmd`/`.bat` shim refusal moved into portable code, so the message is the same on every platform and the check is compiled everywhere.
+- `go.sum` was missing the `/go.mod` hashes of `golang.org/x/sys` and of the test-only dependencies. A build with `-mod=readonly` on Windows failed to load the module graph, because only the Windows build tag imports `golang.org/x/sys`. The Windows job is out of the CI matrix; the Windows build is checked with `GOOS=windows go vet ./...`.
 
 ### Changed
 
