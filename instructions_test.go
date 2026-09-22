@@ -24,6 +24,7 @@ func TestInstructionsRendering(t *testing.T) {
 		{Claude, true, false},
 		{Codex, false, true},
 		{OpenCode, false, true},
+		{OpenCode2, false, true},
 		{Copilot, false, true},
 		{Cursor, false, true},
 		{Gemini, false, true},

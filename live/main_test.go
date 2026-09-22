@@ -34,6 +34,7 @@ var liveTestHarnesses = []agentwire.Harness{
 	agentwire.Claude,
 	agentwire.Codex,
 	agentwire.OpenCode,
+	agentwire.OpenCode2,
 	agentwire.Pi,
 	agentwire.Copilot,
 	agentwire.Cursor,

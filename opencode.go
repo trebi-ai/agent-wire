@@ -10,6 +10,308 @@ import (
 	"time"
 )
 
+// openCodeWire is one version of the OpenCode HTTP surface. The session
+// plumbing is shared between versions; the wire is not.
+type openCodeWire interface {
+	// harness is the harness this wire serves.
+	harness() Harness
+	// prefix is the API root path: "" on V1, "/api" on V2.
+	prefix() string
+	// healthPath is the readiness endpoint.
+	healthPath() string
+	// eventPath is the SSE endpoint.
+	eventPath() string
+	// eventScoped reports whether the event stream is scoped by session
+	// directory. V1 publishes a directory's events only to a stream opened for
+	// it; V2 publishes every location on one stream.
+	eventScoped() bool
+	// frame splits one SSE payload into the event type, the payload and the
+	// session it belongs to.
+	frame(raw []byte) (typ string, payload map[string]any, sessionID string, ok bool)
+	// decode unwraps one JSON response body into out.
+	decode(body []byte, out any) error
+	// errorText reads the message out of a non-2xx response body.
+	errorText(body []byte, status int) string
+}
+
+// openCodeRoute is one session attached to a shared server.
+type openCodeRoute interface {
+	sessionID() string
+	workDir() string
+	deliver([]Event)
+	parse(typ string, payload map[string]any) []Event
+	serverGone(reason string)
+}
+
+// openCodeBase is the transport-agnostic half of an OpenCode session: the event
+// queue, the pump, the terminal bookkeeping and the shared-server refcount. The
+// version-specific half lives in the concrete session type.
+type openCodeBase struct {
+	rt      *Runtime
+	srv     *openCodeServer
+	id      string
+	dir     string
+	harness Harness
+	// interrupt aborts the current turn on this wire.
+	interrupt func(context.Context) error
+
+	events   chan Event
+	done     chan struct{}
+	notify   chan struct{}
+	pumpStop chan struct{}
+
+	queueMu     sync.Mutex
+	queue       []Event
+	queueClosed bool
+	finishOnce  sync.Once
+	releaseOnce sync.Once
+	sawResult   bool
+	live        bool
+	lastError   string
+	onClose     []func()
+}
+
+func newOpenCodeBase(rt *Runtime, srv *openCodeServer, id, dir string, w openCodeWire) *openCodeBase {
+	return &openCodeBase{
+		rt: rt, srv: srv, id: id, dir: dir, harness: w.harness(),
+		events: make(chan Event, 256), done: make(chan struct{}),
+		notify: make(chan struct{}, 1), pumpStop: make(chan struct{}),
+	}
+}
+
+func (b *openCodeBase) sessionID() string { return b.id }
+func (b *openCodeBase) workDir() string   { return b.dir }
+
+// markLive queues the init event for a session the server now knows about. It
+// fires once per session.
+//
+// A wire whose bus does not repeat the session event cannot be the source of
+// init: the event is published while the create is in flight, before the
+// session is routable, so it is dropped. The driver reports the session it just
+// opened instead.
+func (b *openCodeBase) markLive() {
+	b.queueMu.Lock()
+	first := !b.live
+	b.live = true
+	b.queueMu.Unlock()
+	if first {
+		b.deliver([]Event{{Type: EventInit, SessionID: b.id}})
+	}
+}
+
+func (b *openCodeBase) Provider() string { return string(b.harness) }
+func (b *openCodeBase) ID() string       { return b.id }
+func (b *openCodeBase) PID() int         { return b.srv.proc.PID() }
+func (b *openCodeBase) Pgid() int        { return b.srv.proc.Pgid() }
+
+// Argv is the serve command of the owning server (ledger evidence).
+func (b *openCodeBase) Argv() []string { return b.srv.argv }
+
+func (b *openCodeBase) Events() <-chan Event  { return b.events }
+func (b *openCodeBase) Done() <-chan struct{} { return b.done }
+
+func (b *openCodeBase) Err() error {
+	b.queueMu.Lock()
+	defer b.queueMu.Unlock()
+	if b.lastError == "" {
+		return nil
+	}
+	return errors.New(b.lastError)
+}
+
+// deliver queues events for the session pump. It never blocks the shared event
+// stream, whatever the consumer is doing.
+func (b *openCodeBase) deliver(evs []Event) {
+	if len(evs) == 0 {
+		return
+	}
+	b.queueMu.Lock()
+	if b.queueClosed {
+		b.queueMu.Unlock()
+		return
+	}
+	b.queue = append(b.queue, evs...)
+	b.queueMu.Unlock()
+	select {
+	case b.notify <- struct{}{}:
+	default:
+	}
+}
+
+// pump moves queued events to the consumer channel.
+func (b *openCodeBase) pump() {
+	defer close(b.done)
+	defer close(b.events)
+	for {
+		b.queueMu.Lock()
+		batch := b.queue
+		b.queue = nil
+		b.queueMu.Unlock()
+		for _, ev := range batch {
+			if b.send(ev) {
+				return
+			}
+		}
+		select {
+		case <-b.notify:
+		case <-b.pumpStop:
+			b.flush()
+			return
+		}
+	}
+}
+
+// send writes one event and reports whether the pump must stop.
+func (b *openCodeBase) send(ev Event) bool {
+	select {
+	case b.events <- ev:
+		return false
+	default:
+	}
+	select {
+	case b.events <- ev:
+		return false
+	case <-b.pumpStop:
+		return true
+	}
+}
+
+// flush drops any remaining queue on a forced stop.
+func (b *openCodeBase) flush() {
+	b.queueMu.Lock()
+	batch := b.queue
+	b.queue = nil
+	b.queueClosed = true
+	b.queueMu.Unlock()
+	for _, ev := range batch {
+		select {
+		case b.events <- ev:
+		default:
+			return
+		}
+	}
+}
+
+// finish queues the terminal exit event, ends the pump, drops the server
+// refcount and runs the close hooks exactly once.
+func (b *openCodeBase) finish(code *int, reason string) {
+	b.finishOnce.Do(func() {
+		ev := Event{Type: EventExit, Code: reason}
+		if code != nil {
+			ev.ExitCode = code
+		}
+		b.deliver([]Event{ev})
+		close(b.pumpStop)
+		b.releaseServer()
+		b.runOnClose()
+	})
+}
+
+// OnClose registers a cleanup hook that runs once when the session ends.
+func (b *openCodeBase) OnClose(fn func()) {
+	if fn == nil {
+		return
+	}
+	b.queueMu.Lock()
+	b.onClose = append(b.onClose, fn)
+	b.queueMu.Unlock()
+}
+
+func (b *openCodeBase) runOnClose() {
+	b.queueMu.Lock()
+	hooks := b.onClose
+	b.onClose = nil
+	b.queueMu.Unlock()
+	for _, fn := range hooks {
+		fn()
+	}
+}
+
+// releaseServer drops the shared server refcount exactly once.
+func (b *openCodeBase) releaseServer() {
+	b.releaseOnce.Do(func() {
+		b.srv.unsubscribe(b.id)
+		b.rt.oc.release(b.srv)
+	})
+}
+
+// serverGone ends the session because its server disappeared.
+func (b *openCodeBase) serverGone(reason string) {
+	b.queueMu.Lock()
+	saw := b.sawResult
+	b.lastError = firstNonEmpty(b.lastError, reason)
+	b.queueMu.Unlock()
+	if !saw {
+		c := ClassifyFor(b.harness, reason, 0)
+		b.deliver([]Event{{Type: EventError, Error: reason, Code: c.Code, EndReason: string(c.Class)}})
+	}
+	code := -1
+	b.finish(&code, "server_exited")
+}
+
+// Close aborts, unsubscribes and releases the shared server refcount.
+func (b *openCodeBase) Close(ctx context.Context) error {
+	if b.interrupt != nil {
+		abortCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = b.interrupt(abortCtx)
+		cancel()
+	}
+	b.finish(nil, "closed")
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-b.done:
+	case <-ctx.Done():
+	}
+	return nil
+}
+
+// openCodeV1 is the OpenCode 1.x HTTP surface: no path prefix, one event stream
+// per session directory, and an event envelope that carries its payload under
+// `properties`.
+type openCodeV1 struct{}
+
+func (openCodeV1) harness() Harness   { return OpenCode }
+func (openCodeV1) prefix() string     { return "" }
+func (openCodeV1) healthPath() string { return "/global/health" }
+func (openCodeV1) eventPath() string  { return "/event" }
+func (openCodeV1) eventScoped() bool  { return true }
+
+// frame reads one V1 bus frame: {type, properties}.
+func (openCodeV1) frame(raw []byte) (string, map[string]any, string, bool) {
+	var m map[string]any
+	if json.Unmarshal(raw, &m) != nil {
+		return "", nil, "", false
+	}
+	typ := str(m["type"])
+	props, _ := m["properties"].(map[string]any)
+	if typ == "" || props == nil {
+		return "", nil, "", false
+	}
+	return typ, props, openCodeSessionID(props), true
+}
+
+// decode reads a V1 response body, which is the payload itself.
+func (openCodeV1) decode(body []byte, out any) error {
+	if out == nil {
+		return nil
+	}
+	return json.Unmarshal(body, out)
+}
+
+// errorText reads a V1 error body: {error, data:{message}}.
+func (openCodeV1) errorText(body []byte, status int) string {
+	var e struct {
+		Error string `json:"error"`
+		Data  struct {
+			Message string `json:"message"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(body, &e)
+	return firstNonEmpty(e.Error, e.Data.Message, fmt.Sprintf("HTTP %d", status))
+}
+
 // openCodeDriver manages sessions on a runtime-owned `opencode serve`.
 type openCodeDriver struct{ rt *Runtime }
 
@@ -28,7 +330,7 @@ func (d openCodeDriver) start(ctx context.Context, req StartRequest, resume bool
 	if err != nil {
 		return nil, err
 	}
-	srv, err := d.rt.oc.acquireServer(ctx, l.bin, l.env, nil)
+	srv, err := d.rt.oc.acquireServer(ctx, openCodeV1{}, l.bin, l.env, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -36,7 +338,7 @@ func (d openCodeDriver) start(ctx context.Context, req StartRequest, resume bool
 	// Subscribe to the directory's event stream before the session exists:
 	// OpenCode drops every event published before a stream is connected, and
 	// the caller cannot prompt until this call returns.
-	srv.ensureStream(dir)
+	srv.ensureStreamReady(ctx, dir)
 	sessionID := req.SessionID
 	if sessionID != "" {
 		var info map[string]any
@@ -59,27 +361,23 @@ func (d openCodeDriver) start(ctx context.Context, req StartRequest, resume bool
 		return nil, errors.New("opencode: session has no id")
 	}
 	s := &openCodeSession{
-		rt: d.rt, srv: srv, id: sessionID, directory: dir,
+		openCodeBase: newOpenCodeBase(d.rt, srv, sessionID, dir, openCodeV1{}),
 		instructions: l.instructions, model: req.Model, variant: req.Effort,
 		policy: req.Permissions.Normalized(), first: true,
-		events: make(chan Event, 256), done: make(chan struct{}),
-		notify: make(chan struct{}, 1), pumpStop: make(chan struct{}),
 		parts: map[string]int{}, roles: map[string]string{},
 		partOwner: map[string]string{},
 	}
+	s.interrupt = s.Interrupt
 	srv.subscribe(s)
 	go s.pump()
 	d.rt.bindSession(s, l)
 	return s, nil
 }
 
-// openCodeSession is one OpenCode conversation over HTTP plus the shared event
-// stream of its server.
+// openCodeSession is one OpenCode 1.x conversation over HTTP plus the shared
+// event stream of its server.
 type openCodeSession struct {
-	rt        *Runtime
-	srv       *openCodeServer
-	id        string
-	directory string
+	*openCodeBase
 
 	instructions string
 	model        string
@@ -87,172 +385,9 @@ type openCodeSession struct {
 	policy       PermissionPolicy
 	first        bool
 
-	events   chan Event
-	done     chan struct{}
-	notify   chan struct{}
-	pumpStop chan struct{}
-
-	queueMu     sync.Mutex
-	queue       []Event
-	queueClosed bool
-	finishOnce  sync.Once
-	releaseOnce sync.Once
-	sawResult   bool
-	lastError   string
-	parts       map[string]int
-	roles       map[string]string
-	partOwner   map[string]string
-	onClose     []func()
-}
-
-func (s *openCodeSession) Provider() string { return string(OpenCode) }
-func (s *openCodeSession) ID() string       { return s.id }
-func (s *openCodeSession) PID() int         { return s.srv.proc.PID() }
-func (s *openCodeSession) Pgid() int        { return s.srv.proc.Pgid() }
-
-// Argv is the serve command of the owning server (ledger evidence).
-func (s *openCodeSession) Argv() []string { return s.srv.argv }
-
-func (s *openCodeSession) Events() <-chan Event  { return s.events }
-func (s *openCodeSession) Done() <-chan struct{} { return s.done }
-
-func (s *openCodeSession) Err() error {
-	s.queueMu.Lock()
-	defer s.queueMu.Unlock()
-	if s.lastError == "" {
-		return nil
-	}
-	return errors.New(s.lastError)
-}
-
-// deliver queues events for the session pump. It never blocks the shared event
-// stream, whatever the consumer is doing.
-func (s *openCodeSession) deliver(evs []Event) {
-	if len(evs) == 0 {
-		return
-	}
-	s.queueMu.Lock()
-	if s.queueClosed {
-		s.queueMu.Unlock()
-		return
-	}
-	s.queue = append(s.queue, evs...)
-	s.queueMu.Unlock()
-	select {
-	case s.notify <- struct{}{}:
-	default:
-	}
-}
-
-// pump moves queued events to the consumer channel.
-func (s *openCodeSession) pump() {
-	defer close(s.done)
-	defer close(s.events)
-	for {
-		s.queueMu.Lock()
-		batch := s.queue
-		s.queue = nil
-		s.queueMu.Unlock()
-		for _, ev := range batch {
-			if s.send(ev) {
-				return
-			}
-		}
-		select {
-		case <-s.notify:
-		case <-s.pumpStop:
-			s.flush()
-			return
-		}
-	}
-}
-
-// send writes one event and reports whether the pump must stop.
-func (s *openCodeSession) send(ev Event) bool {
-	select {
-	case s.events <- ev:
-		return false
-	default:
-	}
-	select {
-	case s.events <- ev:
-		return false
-	case <-s.pumpStop:
-		return true
-	}
-}
-
-// flush drops any remaining queue on a forced stop.
-func (s *openCodeSession) flush() {
-	s.queueMu.Lock()
-	batch := s.queue
-	s.queue = nil
-	s.queueClosed = true
-	s.queueMu.Unlock()
-	for _, ev := range batch {
-		select {
-		case s.events <- ev:
-		default:
-			return
-		}
-	}
-}
-
-// finish queues the terminal exit event, ends the pump, drops the server
-// refcount and runs the close hooks exactly once.
-func (s *openCodeSession) finish(code *int, reason string) {
-	s.finishOnce.Do(func() {
-		ev := Event{Type: EventExit, Code: reason}
-		if code != nil {
-			ev.ExitCode = code
-		}
-		s.deliver([]Event{ev})
-		close(s.pumpStop)
-		s.releaseServer()
-		s.runOnClose()
-	})
-}
-
-// OnClose registers a cleanup hook that runs once when the session ends.
-func (s *openCodeSession) OnClose(fn func()) {
-	if fn == nil {
-		return
-	}
-	s.queueMu.Lock()
-	s.onClose = append(s.onClose, fn)
-	s.queueMu.Unlock()
-}
-
-func (s *openCodeSession) runOnClose() {
-	s.queueMu.Lock()
-	hooks := s.onClose
-	s.onClose = nil
-	s.queueMu.Unlock()
-	for _, fn := range hooks {
-		fn()
-	}
-}
-
-// releaseServer drops the shared server refcount exactly once.
-func (s *openCodeSession) releaseServer() {
-	s.releaseOnce.Do(func() {
-		s.srv.unsubscribe(s.id)
-		s.rt.oc.release(s.srv)
-	})
-}
-
-// serverGone ends the session because its server disappeared.
-func (s *openCodeSession) serverGone(reason string) {
-	s.queueMu.Lock()
-	saw := s.sawResult
-	s.lastError = firstNonEmpty(s.lastError, reason)
-	s.queueMu.Unlock()
-	if !saw {
-		c := ClassifyFor(OpenCode, reason, 0)
-		s.deliver([]Event{{Type: EventError, Error: reason, Code: c.Code, EndReason: string(c.Class)}})
-	}
-	code := -1
-	s.finish(&code, "server_exited")
+	parts     map[string]int
+	roles     map[string]string
+	partOwner map[string]string
 }
 
 // Prompt starts a turn without waiting: prompt_async answers 204 and the turn
@@ -283,7 +418,7 @@ func (s *openCodeSession) Prompt(ctx context.Context, p Prompt) error {
 	if first && strings.TrimSpace(instructions) != "" {
 		body["system"] = instructions
 	}
-	return s.srv.call(ctx, "POST", "/session/"+s.id+"/prompt_async", s.directory, body, nil)
+	return s.srv.call(ctx, "POST", "/session/"+s.id+"/prompt_async", s.dir, body, nil)
 }
 
 // promptParts renders the prompt body: text plus file parts for attachments.
@@ -322,33 +457,17 @@ func (s *openCodeSession) AnswerPermission(ctx context.Context, permissionID str
 	if !d.Allow {
 		response = "reject"
 	}
-	return s.srv.call(ctx, "POST", "/session/"+s.id+"/permissions/"+permissionID, s.directory,
+	return s.srv.call(ctx, "POST", "/session/"+s.id+"/permissions/"+permissionID, s.dir,
 		map[string]any{"response": response}, nil)
 }
 
 // Interrupt aborts the current turn.
 func (s *openCodeSession) Interrupt(ctx context.Context) error {
-	return s.srv.call(ctx, "POST", "/session/"+s.id+"/abort", s.directory, map[string]any{}, nil)
+	return s.srv.call(ctx, "POST", "/session/"+s.id+"/abort", s.dir, map[string]any{}, nil)
 }
 
 // InterruptTurn is the protocol interrupt.
 func (s *openCodeSession) InterruptTurn(ctx context.Context) error { return s.Interrupt(ctx) }
-
-// Close aborts, unsubscribes and releases the shared server refcount.
-func (s *openCodeSession) Close(ctx context.Context) error {
-	abortCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	_ = s.Interrupt(abortCtx)
-	cancel()
-	s.finish(nil, "closed")
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	select {
-	case <-s.done:
-	case <-ctx.Done():
-	}
-	return nil
-}
 
 // parse maps one OpenCode bus event to normalized events.
 func (s *openCodeSession) parse(typ string, props map[string]any) []Event {
@@ -593,7 +712,7 @@ func (rt *Runtime) OpenCodeMessages(ctx context.Context, sessionID string) ([]by
 			continue
 		}
 		var raw json.RawMessage
-		if err := srv.call(ctx, "GET", "/session/"+sessionID+"/message", sess.directory, nil, &raw); err != nil {
+		if err := srv.call(ctx, "GET", "/session/"+sessionID+"/message", sess.workDir(), nil, &raw); err != nil {
 			return nil, false
 		}
 		return raw, len(raw) > 0
@@ -606,3 +725,9 @@ var _ Session = (*openCodeSession)(nil)
 
 // ensure the driver satisfies the Driver interface.
 var _ Driver = openCodeDriver{}
+
+// ensure the V1 wire satisfies the wire interface.
+var _ openCodeWire = openCodeV1{}
+
+// ensure the session is routable on its server.
+var _ openCodeRoute = (*openCodeSession)(nil)

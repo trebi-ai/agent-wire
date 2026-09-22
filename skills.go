@@ -66,7 +66,7 @@ func (rt *Runtime) applySkills(ctx context.Context, req *StartRequest, l *launch
 			return "", err
 		}
 		return "", nil
-	case OpenCode:
+	case OpenCode, OpenCode2:
 		if req.Home == "" {
 			return skillIndex(req.Harness, loaded), nil
 		}

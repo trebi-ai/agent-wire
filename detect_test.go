@@ -150,6 +150,13 @@ func TestDetectFeaturesTable(t *testing.T) {
 			},
 		},
 		{
+			h: OpenCode2,
+			want: Features{
+				MCPInject: MCPFlags, SkillsInject: SkillOverlay, Instructions: true,
+				Attachments: true, Resume: true, Permissions: true,
+			},
+		},
+		{
 			h: Pi,
 			want: Features{
 				MCPInject: MCPFlags, SkillsInject: SkillNative, Instructions: true,

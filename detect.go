@@ -75,7 +75,7 @@ func featuresFor(h Harness) Features {
 		return Features{MCPInject: MCPFlags, SkillsInject: SkillNative, Instructions: true, Attachments: true, Resume: true, Permissions: true}
 	case Codex:
 		return Features{MCPInject: MCPFlags, SkillsInject: SkillOverlay, Instructions: true, Attachments: true, Resume: true, Permissions: true}
-	case OpenCode:
+	case OpenCode, OpenCode2:
 		return Features{MCPInject: MCPFlags, SkillsInject: SkillOverlay, Instructions: true, Attachments: true, Resume: true, Permissions: true}
 	case Pi:
 		return Features{MCPInject: MCPFlags, SkillsInject: SkillNative, Instructions: true, Resume: true, Permissions: true}
@@ -311,6 +311,18 @@ var authProbes = map[Harness]authProbe{
 		},
 	},
 	OpenCode: {
+		args: []string{"auth", "list"},
+		parse: func(out string, err error) (AuthState, string, bool) {
+			if err != nil {
+				return AuthUnknown, "", false
+			}
+			if strings.TrimSpace(out) == "" {
+				return AuthMissing, "", true
+			}
+			return AuthOK, "", true
+		},
+	},
+	OpenCode2: {
 		args: []string{"auth", "list"},
 		parse: func(out string, err error) (AuthState, string, bool) {
 			if err != nil {

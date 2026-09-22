@@ -39,14 +39,14 @@ func TestRuntimeZeroOptionsIsUsable(t *testing.T) {
 func TestRuntimeHarnessList(t *testing.T) {
 	t.Parallel()
 	list := Harnesses()
-	if len(list) != 8 {
-		t.Fatalf("Harnesses() = %v, want 8 entries", list)
+	if len(list) != 9 {
+		t.Fatalf("Harnesses() = %v, want 9 entries", list)
 	}
 	set := map[Harness]bool{}
 	for _, h := range list {
 		set[h] = true
 	}
-	for _, want := range []Harness{Claude, Codex, OpenCode, Pi, Copilot, Cursor, Gemini, Fake} {
+	for _, want := range []Harness{Claude, Codex, OpenCode, OpenCode2, Pi, Copilot, Cursor, Gemini, Fake} {
 		if !set[want] {
 			t.Errorf("Harnesses() misses %q", want)
 		}

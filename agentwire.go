@@ -31,19 +31,20 @@ import (
 type Harness string
 
 const (
-	Claude   Harness = "claude"
-	Codex    Harness = "codex"
-	OpenCode Harness = "opencode"
-	Pi       Harness = "pi"
-	Copilot  Harness = "copilot"
-	Cursor   Harness = "cursor"
-	Gemini   Harness = "gemini"
-	Fake     Harness = "fake"
+	Claude    Harness = "claude"
+	Codex     Harness = "codex"
+	OpenCode  Harness = "opencode"
+	OpenCode2 Harness = "opencode2"
+	Pi        Harness = "pi"
+	Copilot   Harness = "copilot"
+	Cursor    Harness = "cursor"
+	Gemini    Harness = "gemini"
+	Fake      Harness = "fake"
 )
 
 // Harnesses lists every harness the library can drive a wire for.
 func Harnesses() []Harness {
-	return []Harness{Claude, Codex, OpenCode, Pi, Copilot, Cursor, Gemini, Fake}
+	return []Harness{Claude, Codex, OpenCode, OpenCode2, Pi, Copilot, Cursor, Gemini, Fake}
 }
 
 // Options configures a Runtime.
@@ -224,14 +225,15 @@ func New(opts Options) *Runtime {
 	}
 	rt.oc = newOpenCodeManager(rt)
 	rt.builtin = map[Harness]Driver{
-		Claude:   claudeDriver{rt},
-		Codex:    codexDriver{rt},
-		OpenCode: openCodeDriver{rt},
-		Pi:       piDriver{rt},
-		Copilot:  acpDriver{rt, acpCopilot},
-		Cursor:   acpDriver{rt, acpCursor},
-		Gemini:   acpDriver{rt, acpGemini},
-		Fake:     FakeDriver{},
+		Claude:    claudeDriver{rt},
+		Codex:     codexDriver{rt},
+		OpenCode:  openCodeDriver{rt},
+		OpenCode2: openCode2Driver{rt},
+		Pi:        piDriver{rt},
+		Copilot:   acpDriver{rt, acpCopilot},
+		Cursor:    acpDriver{rt, acpCursor},
+		Gemini:    acpDriver{rt, acpGemini},
+		Fake:      FakeDriver{},
 	}
 	rt.drivers = map[Harness]Driver{}
 	for h, d := range rt.builtin {

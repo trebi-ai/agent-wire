@@ -32,6 +32,9 @@ const (
 	openCodeStreamRetryMax = 10 * time.Second
 )
 
+// openCodeStreamReadyTimeout bounds the wait for a new event stream to connect.
+const openCodeStreamReadyTimeout = 10 * time.Second
+
 // openCodeManager owns the shared `opencode serve` processes of one Runtime,
 // keyed by binary, non-run-scoped environment and extra arguments.
 type openCodeManager struct {
@@ -78,16 +81,32 @@ type openCodeServer struct {
 	proc     *proc.Proc
 	argv     []string
 	rt       *Runtime
+	// wire is the HTTP surface this server speaks.
+	wire openCodeWire
 
 	mu       sync.Mutex
 	refs     int
 	idle     *time.Timer
-	sessions map[string]*openCodeSession
-	// streams holds one /event connection per session directory. OpenCode
-	// scopes its event bus by directory, so a stream opened without one never
-	// sees a session that runs in another directory.
-	streams map[string]context.CancelFunc
+	sessions map[string]openCodeRoute
+	// streams holds the server's /event connections, keyed by the scope the
+	// wire needs. V1 scopes its event bus by directory, so a stream opened
+	// without one never sees a session that runs in another directory; V2
+	// streams every location on one connection.
+	streams map[string]*openCodeStream
 	stopped bool
+}
+
+// openCodeStream is one event-stream connection of a server.
+type openCodeStream struct {
+	cancel context.CancelFunc
+	// ready is closed once the connection is established.
+	ready chan struct{}
+	once  sync.Once
+}
+
+// markReady reports that the connection is live.
+func (st *openCodeStream) markReady() {
+	st.once.Do(func() { close(st.ready) })
 }
 
 // baseURL is the loopback origin.
@@ -137,10 +156,10 @@ func (s *openCodeServer) stop() {
 	streams := s.streams
 	s.streams = nil
 	sessions := s.sessions
-	s.sessions = map[string]*openCodeSession{}
+	s.sessions = map[string]openCodeRoute{}
 	s.mu.Unlock()
-	for _, cancel := range streams {
-		cancel()
+	for _, st := range streams {
+		st.cancel()
 	}
 	for _, sess := range sessions {
 		sess.serverGone("opencode serve stopped")
@@ -154,9 +173,9 @@ func (s *openCodeServer) stop() {
 }
 
 // subscribe adds a session to the routing table.
-func (s *openCodeServer) subscribe(sess *openCodeSession) {
+func (s *openCodeServer) subscribe(sess openCodeRoute) {
 	s.mu.Lock()
-	s.sessions[sess.id] = sess
+	s.sessions[sess.sessionID()] = sess
 	s.mu.Unlock()
 }
 
@@ -168,52 +187,77 @@ func (s *openCodeServer) unsubscribe(id string) {
 }
 
 // lookup finds the session a bus event belongs to.
-func (s *openCodeServer) lookup(id string) *openCodeSession {
+func (s *openCodeServer) lookup(id string) openCodeRoute {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.sessions[id]
 }
 
 // allSessions snapshots the routing table.
-func (s *openCodeServer) allSessions() []*openCodeSession {
+func (s *openCodeServer) allSessions() []openCodeRoute {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]*openCodeSession, 0, len(s.sessions))
+	out := make([]openCodeRoute, 0, len(s.sessions))
 	for _, sess := range s.sessions {
 		out = append(out, sess)
 	}
 	return out
 }
 
-// ensureStream starts the single event stream this server needs, whatever the
-// number of sessions on it.
-// ensureStream keeps one /event connection open for a session directory.
-// OpenCode publishes a session's events only to a stream opened for the same
-// directory, so the stream is keyed by directory, not by server.
-func (s *openCodeServer) ensureStream(directory string) {
+// ensureStream keeps one event stream open for the scope the wire needs: one
+// per session directory on V1, one per server on V2.
+// OpenCode 1.x publishes a session's events only to a stream opened for the
+// same directory, so the stream is keyed by directory, not by server.
+func (s *openCodeServer) ensureStream(directory string) *openCodeStream {
 	s.mu.Lock()
 	if s.stopped {
 		s.mu.Unlock()
-		return
+		return nil
 	}
 	if s.streams == nil {
-		s.streams = map[string]context.CancelFunc{}
+		s.streams = map[string]*openCodeStream{}
 	}
-	if _, ok := s.streams[directory]; ok {
+	scope := directory
+	if !s.wire.eventScoped() {
+		scope = ""
+	}
+	if st, ok := s.streams[scope]; ok {
 		s.mu.Unlock()
-		return
+		return st
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	s.streams[directory] = cancel
+	st := &openCodeStream{cancel: cancel, ready: make(chan struct{})}
+	s.streams[scope] = st
 	s.mu.Unlock()
-	go s.streamLoop(ctx, directory)
+	go s.streamLoop(ctx, scope, st)
+	return st
+}
+
+// ensureStreamReady opens the event stream for a scope and waits until it is
+// connected. A session created before the stream is live loses every event the
+// vendor publishes for it, including the one that carries the session id.
+func (s *openCodeServer) ensureStreamReady(ctx context.Context, directory string) error {
+	st := s.ensureStream(directory)
+	if st == nil {
+		return errors.New("opencode: server is stopped")
+	}
+	timer := time.NewTimer(openCodeStreamReadyTimeout)
+	defer timer.Stop()
+	select {
+	case <-st.ready:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return errors.New("opencode: event stream did not connect")
+	}
 }
 
 // streamLoop keeps one /event connection alive and routes frames by session.
-func (s *openCodeServer) streamLoop(ctx context.Context, directory string) {
+func (s *openCodeServer) streamLoop(ctx context.Context, directory string, st *openCodeStream) {
 	backoff := openCodeStreamRetryMin
 	for ctx.Err() == nil {
-		err := s.readStream(ctx, directory)
+		err := s.readStream(ctx, directory, st)
 		if ctx.Err() != nil {
 			return
 		}
@@ -238,10 +282,11 @@ func (s *openCodeServer) streamLoop(ctx context.Context, directory string) {
 	}
 }
 
-// readStream reads /event for one directory until the connection ends.
-func (s *openCodeServer) readStream(ctx context.Context, directory string) error {
-	streamURL := s.baseURL() + "/event"
-	if directory != "" {
+// readStream reads the event stream for one scope until the connection ends.
+func (s *openCodeServer) readStream(ctx context.Context, directory string, st *openCodeStream) error {
+	streamURL := s.baseURL() + s.wire.eventPath()
+	scoped := s.wire.eventScoped() && directory != ""
+	if scoped {
 		streamURL += "?" + url.Values{"directory": {directory}}.Encode()
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, streamURL, nil)
@@ -249,7 +294,7 @@ func (s *openCodeServer) readStream(ctx context.Context, directory string) error
 		return err
 	}
 	req.Header.Set("Accept", "text/event-stream")
-	if directory != "" {
+	if scoped {
 		req.Header.Set("x-opencode-directory", directory)
 	}
 	req.SetBasicAuth(s.username, s.password)
@@ -259,8 +304,11 @@ func (s *openCodeServer) readStream(ctx context.Context, directory string) error
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("opencode /event: HTTP %d", resp.StatusCode)
+		return fmt.Errorf("opencode %s: HTTP %d", s.wire.eventPath(), resp.StatusCode)
 	}
+	// The connection is live: a session may now be created without losing its
+	// first events.
+	st.markReady()
 	br := bufio.NewReaderSize(resp.Body, 64<<10)
 	var data strings.Builder
 	flush := func() {
@@ -324,21 +372,12 @@ func readSSELine(br *bufio.Reader, max int) (string, error) {
 
 // dispatch routes one bus frame to the session it names.
 func (s *openCodeServer) dispatch(frame []byte) {
-	var m map[string]any
-	if json.Unmarshal(frame, &m) != nil {
-		return
-	}
-	typ := str(m["type"])
-	props, _ := m["properties"].(map[string]any)
-	if props == nil {
-		return
-	}
-	id := openCodeSessionID(props)
-	if id == "" {
+	typ, payload, id, ok := s.wire.frame(frame)
+	if !ok || id == "" {
 		return
 	}
 	if sess := s.lookup(id); sess != nil {
-		sess.deliver(sess.parse(typ, props))
+		sess.deliver(sess.parse(typ, payload))
 	}
 }
 
@@ -352,8 +391,8 @@ func (s *openCodeServer) call(ctx context.Context, method, path, directory strin
 		}
 		payload = b
 	}
-	reqURL := s.baseURL() + path
-	if directory != "" {
+	reqURL := s.baseURL() + s.wire.prefix() + path
+	if s.wire.eventScoped() && directory != "" {
 		reqURL += "?" + url.Values{"directory": {directory}}.Encode()
 	}
 	req, err := http.NewRequestWithContext(ctx, method, reqURL, strings.NewReader(string(payload)))
@@ -363,7 +402,7 @@ func (s *openCodeServer) call(ctx context.Context, method, path, directory strin
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if directory != "" {
+	if s.wire.eventScoped() && directory != "" {
 		req.Header.Set("x-opencode-directory", directory)
 	}
 	req.SetBasicAuth(s.username, s.password)
@@ -373,21 +412,14 @@ func (s *openCodeServer) call(ctx context.Context, method, path, directory strin
 		return err
 	}
 	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, int64(s.rt.maxFr)))
+	if err != nil {
+		return err
+	}
 	if resp.StatusCode >= 400 {
-		var e struct {
-			Error string `json:"error"`
-			Data  struct {
-				Message string `json:"message"`
-			} `json:"data"`
-		}
-		_ = json.NewDecoder(resp.Body).Decode(&e)
-		msg := firstNonEmpty(e.Error, e.Data.Message, fmt.Sprintf("HTTP %d", resp.StatusCode))
-		return fmt.Errorf("opencode %s %s: %s", method, path, msg)
+		return fmt.Errorf("opencode %s %s: %s", method, path, s.wire.errorText(raw, resp.StatusCode))
 	}
-	if out != nil {
-		return json.NewDecoder(resp.Body).Decode(out)
-	}
-	return nil
+	return s.wire.decode(raw, out)
 }
 
 // openCodeExitText describes why a serve child died.
@@ -400,9 +432,10 @@ func openCodeExitText(p *proc.Proc) string {
 }
 
 // openCodeFingerprint keys a shared server by the environment that changes what
-// it can serve: binary, non-run-scoped variables, and extra arguments. Keys in
-// Options.FingerprintIgnoreEnv and the server's own auth never split it.
-func (m *openCodeManager) fingerprint(bin string, env map[string]string, extra []string) string {
+// it can serve: the wire, the binary, non-run-scoped variables, and extra
+// arguments. Keys in Options.FingerprintIgnoreEnv and the server's own auth
+// never split it.
+func (m *openCodeManager) fingerprint(w openCodeWire, bin string, env map[string]string, extra []string) string {
 	keys := make([]string, 0, len(env))
 	for k := range env {
 		if m.excluded(k) {
@@ -412,6 +445,8 @@ func (m *openCodeManager) fingerprint(bin string, env map[string]string, extra [
 	}
 	sort.Strings(keys)
 	var b strings.Builder
+	b.WriteString(string(w.harness()))
+	b.WriteByte('\x00')
 	b.WriteString(bin)
 	b.WriteByte('\x00')
 	for _, k := range keys {
@@ -438,8 +473,8 @@ func (m *openCodeManager) excluded(key string) bool {
 }
 
 // acquireServer returns a live shared server, starting one when needed.
-func (m *openCodeManager) acquireServer(ctx context.Context, bin string, env map[string]string, extraArgs []string) (*openCodeServer, error) {
-	key := m.fingerprint(bin, env, extraArgs)
+func (m *openCodeManager) acquireServer(ctx context.Context, w openCodeWire, bin string, env map[string]string, extraArgs []string) (*openCodeServer, error) {
+	key := m.fingerprint(w, bin, env, extraArgs)
 	m.mu.Lock()
 	if s, ok := m.servers[key]; ok && s.alive() {
 		m.mu.Unlock()
@@ -448,7 +483,7 @@ func (m *openCodeManager) acquireServer(ctx context.Context, bin string, env map
 	}
 	m.mu.Unlock()
 
-	s, err := m.startServer(ctx, key, bin, env, extraArgs)
+	s, err := m.startServer(ctx, key, w, bin, env, extraArgs)
 	if err != nil {
 		return nil, err
 	}
@@ -472,7 +507,7 @@ func (s *openCodeServer) alive() bool {
 	return !stopped && s.proc != nil && s.proc.ExitCode() == -1
 }
 
-func (m *openCodeManager) startServer(ctx context.Context, key, bin string, env map[string]string, extraArgs []string) (*openCodeServer, error) {
+func (m *openCodeManager) startServer(ctx context.Context, key string, w openCodeWire, bin string, env map[string]string, extraArgs []string) (*openCodeServer, error) {
 	childEnv := make(map[string]string, len(env)+2)
 	for k, v := range env {
 		childEnv[k] = v
@@ -492,16 +527,16 @@ func (m *openCodeManager) startServer(ctx context.Context, key, bin string, env 
 		args := append([]string{"serve", "--port", strconv.Itoa(port), "--hostname", "127.0.0.1"}, extraArgs...)
 		p, err := proc.Start(ctx, proc.Opts{
 			Path: bin, Args: args, Env: proc.ChildEnv(childEnv),
-			OnStderr: m.rt.stderrHook(OpenCode, nil),
+			OnStderr: m.rt.stderrHook(w.harness(), nil),
 		})
 		if err != nil {
-			return nil, fmt.Errorf("opencode serve: %w", err)
+			return nil, fmt.Errorf("%s serve: %w", w.harness(), err)
 		}
 		s := &openCodeServer{
-			key: key, bin: bin, port: port, password: password,
+			key: key, bin: bin, port: port, password: password, wire: w,
 			username: childEnv["OPENCODE_SERVER_USERNAME"], proc: p, refs: 1,
 			argv: append([]string{bin}, args...), rt: m.rt,
-			sessions: map[string]*openCodeSession{},
+			sessions: map[string]openCodeRoute{},
 		}
 		if err := s.waitHealthy(ctx); err != nil {
 			_ = p.KillTree()
@@ -512,7 +547,7 @@ func (m *openCodeManager) startServer(ctx context.Context, key, bin string, env 
 			return nil, err
 		}
 		if m.rt.led != nil {
-			m.rt.led.Track("opencode:"+key, string(OpenCode), p.PID(), p.Pgid(), s.argv)
+			m.rt.led.Track(string(w.harness())+":"+key, string(w.harness()), p.PID(), p.Pgid(), s.argv)
 		}
 		return s, nil
 	}
@@ -529,7 +564,8 @@ func freePort() (int, error) {
 	return l.Addr().(*net.TCPAddr).Port, nil
 }
 
-// waitHealthy polls /global/health until the server answers or the child dies.
+// waitHealthy polls the wire's health endpoint until the server answers or the
+// child dies.
 func (s *openCodeServer) waitHealthy(ctx context.Context) error {
 	deadline := time.Now().Add(openCodeReadyTimeout)
 	client := &http.Client{Timeout: 2 * time.Second}
@@ -537,7 +573,7 @@ func (s *openCodeServer) waitHealthy(ctx context.Context) error {
 		if s.proc.ExitCode() != -1 {
 			return fmt.Errorf("opencode serve exited early: %s", strings.TrimSpace(s.proc.Stderr()))
 		}
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, s.baseURL()+"/global/health", nil)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, s.baseURL()+s.wire.healthPath(), nil)
 		req.SetBasicAuth(s.username, s.password)
 		if resp, err := client.Do(req); err == nil {
 			var body struct {

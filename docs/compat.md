@@ -82,6 +82,60 @@ Protocol surfaces the library depends on:
 | Skills folder name (`skill`) under the config dir | confirmed 1.18.29 (2026-09-22): `GET /skill` lists a skill from `<dir>/skill/<name>/SKILL.md` and from `<dir>/skills/<name>/SKILL.md`. `GET /config` never reports skills |
 | `system`, `model` and `variant` on `prompt_async` | confirmed 1.18.29 (2026-09-22): the served OpenAPI document gives `prompt_async` a body of `parts` plus `system` (string), `model` (`{providerID, modelID}`) and `variant` (string) |
 
+## OpenCode 2 (beta)
+
+| Item | Value |
+|---|---|
+| Binary | `opencode2` |
+| Protocol | `/api` REST plus the `/api/event` SSE stream |
+| Verified version | `opencode2 v0.0.0-beta-19242` (2026-09-22) |
+| Version floor | none (any version the binary reports) |
+
+The V2 beta is a separate binary from the V1 line, so both are driven side by side. V2 has no compatibility layer: every unprefixed path answers with the web UI, so a V1 client that talks to it reads HTML instead of JSON.
+
+Wire differences from V1 that the driver handles:
+
+| Surface | V1 | V2 |
+|---|---|---|
+| API root | `/` | `/api` |
+| Readiness | `GET /global/health` | `GET /api/health` |
+| Response shape | the payload itself | `{"data": …}` |
+| Event envelope | `{type, properties}` | `{id, type, data}` |
+| Event scope | one stream per session directory | one stream for every location |
+| Session create | `POST /session` → `{id}` | `POST /api/session` with `location` → `{data:{id}}` |
+| Prompt | `POST …/prompt_async` with `parts` | `POST …/prompt` with `text` and `files` |
+| Model pin | `model` on the prompt body | `model` on the create body, or `POST …/model` |
+| Permission reply | `POST …/permissions/<id>` `{response}` | `POST …/permission/<id>/reply` `{reply}` |
+| Interrupt | `POST …/abort` | `POST …/interrupt`, no body |
+| Turn end | `session.idle` | `session.execution.succeeded` / `session.execution.failed` |
+
+Protocol surfaces the library depends on, all confirmed on `0.0.0-beta-19242` (2026-09-22) against a running server, with a real model turn:
+
+| Surface | Status |
+|---|---|
+| `GET /api/health` | confirmed: `{"healthy":true,"version":"0.0.0-beta-19242","pid":…}` |
+| `POST /api/session` with `location.directory` | confirmed: the session is created in that directory and reports it back |
+| `GET /api/session/<id>`, `GET /api/session/<id>/message` | confirmed: both answer by session id; the `location` query parameter is accepted and changes nothing, so per-session calls need no directory |
+| `POST /api/session/<id>/prompt` | confirmed: a body of `{"text": …}` starts a turn. A V1 body with `parts` returns 400 `Missing key at ["text"]` |
+| `POST /api/session/<id>/model` | confirmed: `{"model":{"providerID":…,"id":…}}` selects the model, and the session reports it in `session.model.selected` |
+| `PUT /api/session/<id>/instructions/entries/<key>` | confirmed: an entry reaches the model. The key must match `^[a-z0-9][a-z0-9._-]*$`; `core/instructions` returns 404 because of the slash, while `agentwire.instructions` is accepted |
+| `POST /api/session/<id>/interrupt` | confirmed by the live tier |
+| `POST /api/session/<id>/permission/<id>/reply` | confirmed by the unit tier; the served OpenAPI document gives the body as `{"reply":"once"\|"always"\|"reject"}` |
+| `GET /api/event` SSE stream | confirmed: no query parameters, one connection for every location, events routed by `data.sessionID` |
+| Event vocabulary | confirmed from real turns: `session.created`, `session.execution.started/succeeded/failed`, `session.step.started/streamed/ended/failed`, `session.text.started/delta/ended`, `session.reasoning.started/delta/ended`, `session.tool.input.started/delta/ended`, `session.tool.called/success/failed/progress`, `session.usage.updated`, `session.inbox.enqueued/delivered`, `session.instructions.updated`, `session.model.selected`, `permission.asked`, `shell.created/exited` |
+| Structured errors | confirmed: `session.step.failed` carries `error:{type:"provider.auth",message:…,status:401}`. The driver maps the type before it falls back to text |
+| `OPENCODE_SERVER_PASSWORD` / `OPENCODE_SERVER_USERNAME` | confirmed: the server takes the password from the environment and does not print one; a wrong password answers 401 |
+| `OPENCODE_CONFIG_CONTENT` and `OPENCODE_CONFIG_DIR` | confirmed present in the binary, so per-server MCP injection and an isolated home work as they do on V1 |
+| `opencode2 auth list` | confirmed: prints the stored credentials, so the login probe is the V1 probe |
+
+Findings that are not wire facts:
+
+- `opencode2` does not take the `model` key of `~/.config/opencode/opencode.json` as its session default. A fresh session started on `anthropic/claude-opus-5-5` while the config named `opencode-go/deepseek-v4.1-flash`, and the turn then failed with `provider.auth`. Pin the model with `StartRequest.Model` (or `AGENTWIRE_LIVE_MODEL_OPENCODE2` for the live tier) instead of relying on the config default.
+- The V2 event stream does not replay history: a stream opened after a session exists receives only later events. The library opens the stream before it creates the session, and waits for the connection before it sends the create.
+- `session.step.ended` ends a step, not a turn: a turn with tool calls has several steps and ends at `session.execution.succeeded`.
+- `session.created` is published while the create is still in flight, so it can reach the stream before the session is routable and be dropped. V2 does not repeat it, so the driver reports the session itself once the create answers.
+- `session.text.ended` can carry text that never streamed as a delta, for example a trailing exit code. The driver reconciles the block against what it already sent and forwards only the difference.
+
 ## pi
 
 | Item | Value |

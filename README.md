@@ -6,7 +6,7 @@ agentwire spawns the vendor binary that is already on the machine and speaks the
 
 - Claude `stream-json` over stdin and stdout.
 - Codex `app-server` JSON-RPC over stdin and stdout.
-- OpenCode `serve` REST plus an SSE event stream.
+- OpenCode `serve` REST plus an SSE event stream, for 1.x and for the 2.x beta.
 - ACP over stdin and stdout, for Copilot, Cursor and Gemini.
 - pi RPC (NDJSON) over stdin and stdout.
 
@@ -25,6 +25,7 @@ Every cache, server pool, version record and crash ledger hangs off one `Runtime
 | Claude Code | `agentwire.Claude` | `claude` | stream-json (NDJSON) over stdin and stdout |
 | Codex | `agentwire.Codex` | `codex` | app-server JSON-RPC over stdin and stdout |
 | OpenCode | `agentwire.OpenCode` | `opencode` | `serve` REST plus SSE |
+| OpenCode 2 (beta) | `agentwire.OpenCode2` | `opencode2` | `/api` REST plus SSE |
 | pi | `agentwire.Pi` | `pi` | pi RPC (NDJSON) over stdin and stdout |
 | Copilot | `agentwire.Copilot` | `copilot` | ACP over stdin and stdout |
 | Cursor | `agentwire.Cursor` | `cursor-agent` | ACP over stdin and stdout |

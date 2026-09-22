@@ -56,7 +56,7 @@ func (rt *Runtime) applyMCPServers(req *StartRequest, l *launch) error {
 		}
 	case Codex:
 		l.args = append(l.args, codexMCPArgs(req.MCPServers)...)
-	case OpenCode:
+	case OpenCode, OpenCode2:
 		content, err := openCodeConfigContent(req.MCPServers)
 		if err != nil {
 			return err

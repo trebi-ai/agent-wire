@@ -20,6 +20,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Crash ledger. `Runtime.Reconcile` kills positively matched leftover children from a previous process and never touches a reused pid.
 - Shared JSON-RPC client in `internal/jsonrpc`, used by the Codex and ACP drivers, with number and string ids, and with waiter cleanup on timeout, cancel and send error.
 - Go-native wire with no runtime SDK dependency. The vendor SDKs are a test-time fixture oracle only.
+- `OpenCode2`: the OpenCode 2.x HTTP surface, spoken by the `opencode2` beta binary. Every route lives under `/api` behind the server's basic auth, responses carry a `{data: …}` envelope, events carry their payload under `data`, and a turn ends with `session.execution.succeeded` instead of `session.idle`. Sessions, prompts, per-session model pins, per-session instructions, permissions, attachments and interrupts all work. `OpenCode` (1.x) is unchanged, and both harnesses are selectable side by side.
+- OpenCode 2.x classifies a failure from the vendor's structured error type (`provider.auth`, `provider.quota`, `provider.rate-limit`, `provider.internal`, …) before falling back to the shared text and status rules.
 
 ### Fixed
 
@@ -31,6 +33,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Claude never received `--permission-prompt-tool stdio`, so the CLI answered prompts itself and never sent `can_use_tool`. The flag is now part of the permission policy, and it is kept in every mode, including `inherit`.
 - OpenCode: the session's done channel was never created, so every finished session panicked while closing it.
 - OpenCode: the `/event` stream was opened once per server with no directory, but OpenCode scopes its event bus by directory. A session whose working directory differed from the server's received no events at all and hung until the caller gave up. The stream is now opened per session directory, before the session is created.
+- OpenCode: the event stream is now awaited before the session is created, and OpenCode 2 reports the session itself instead of waiting for the bus. The stream connection was started in a goroutine, and the session was routable only after the create answered, so `session.created` could be published before the stream was live, or before the session was subscribed. Either way the caller saw no init event. Affects both wires; OpenCode 1 keeps its bus-driven init, and OpenCode 2 emits it from the driver.
 - The live tier takes `AGENTWIRE_LIVE_MODEL_<HARNESS>` (or `AGENTWIRE_LIVE_MODEL`) to pin a model, so the gate measures the library and not an unavailable account default.
 - Codex: an app-server request for a method the library cannot answer is refused with `-32601` instead of being turned into a permission event the peer cannot use.
 - `Runtime.Detect` reports the fake harness as always supported. It has no vendor binary and no login, so it can never be "not installed".
@@ -41,3 +44,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `Runtime.SetDriver(h, nil)` now restores the built-in driver for that harness instead of removing it. A caller that injects a driver for a test can always get back to the default table.
 - `PermissionInherit` adds no permission-mode flag, so the operator's own harness configuration decides, while the host prompt callback stays installed.
 - `internal/proc.Proc.Wait` returns `(exitCode int, err error)`.
+- The OpenCode server pool is keyed by wire as well as binary, environment and extra arguments, so an `opencode` and an `opencode2` session never share a server.

@@ -154,8 +154,8 @@ func coaTestNewOpenCode(t *testing.T, rt *Runtime) *coaTestOpenCode {
 		t.Fatalf("coaTestOpenCode: server port: %v", err)
 	}
 	oc.route = &openCodeServer{
-		port: port, username: "u", password: "p", rt: rt,
-		sessions: map[string]*openCodeSession{},
+		port: port, username: "u", password: "p", rt: rt, wire: openCodeV1{},
+		sessions: map[string]openCodeRoute{},
 	}
 	// The streaming handler must stop before the server can close, so the
 	// release cleanup runs first (cleanups run last in, first out).
@@ -171,11 +171,9 @@ func coaTestNewOpenCode(t *testing.T, rt *Runtime) *coaTestOpenCode {
 // driver sets, subscribes it, and starts its pump.
 func (oc *coaTestOpenCode) session(id, directory, instructions, model, variant string, policy PermissionPolicy) *openCodeSession {
 	s := &openCodeSession{
-		rt: oc.route.rt, srv: oc.route, id: id, directory: directory,
+		openCodeBase: newOpenCodeBase(oc.route.rt, oc.route, id, directory, openCodeV1{}),
 		instructions: instructions, model: model, variant: variant,
 		policy: policy.Normalized(), first: true,
-		events: make(chan Event, 256), done: make(chan struct{}),
-		notify: make(chan struct{}, 1), pumpStop: make(chan struct{}),
 		parts: map[string]int{}, roles: map[string]string{}, partOwner: map[string]string{},
 	}
 	oc.route.subscribe(s)

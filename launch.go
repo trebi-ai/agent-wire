@@ -55,7 +55,7 @@ func binName(h Harness) string {
 	switch h {
 	case Cursor:
 		return "cursor-agent"
-	case Claude, Codex, OpenCode, Pi, Copilot, Gemini:
+	case Claude, Codex, OpenCode, OpenCode2, Pi, Copilot, Gemini:
 		return string(h)
 	}
 	return string(h)
@@ -161,7 +161,7 @@ func applyHomeEnv(req *StartRequest, l *launch) {
 		l.env["DISABLE_UPDATES"] = "1"
 	case Codex:
 		l.env["CODEX_HOME"] = req.Home
-	case OpenCode:
+	case OpenCode, OpenCode2:
 		l.env["OPENCODE_CONFIG_DIR"] = req.Home
 	case Pi:
 		l.env["PI_CODING_AGENT_DIR"] = req.Home
@@ -178,8 +178,8 @@ func applyHomeEnv(req *StartRequest, l *launch) {
 }
 
 // applySessionArgs adds the session id where the harness takes it as a flag.
-// Codex, OpenCode, Gemini and the ACP agents take it on the wire instead; the
-// driver reads StartRequest.SessionID.
+// Codex, OpenCode, OpenCode2, Gemini and the ACP agents take it on the wire
+// instead; the driver reads StartRequest.SessionID.
 func applySessionArgs(req *StartRequest, l *launch) {
 	id := req.SessionID
 	if id == "" {
@@ -206,8 +206,8 @@ func applySessionArgs(req *StartRequest, l *launch) {
 }
 
 // applyModelEffort adds the model and reasoning-effort flags. A harness that
-// takes them on the wire (Codex model, OpenCode model and variant, ACP
-// set_model) gets them from the driver instead.
+// takes them on the wire (Codex model, OpenCode and OpenCode2 model and
+// variant, ACP set_model) gets them from the driver instead.
 func applyModelEffort(req *StartRequest, l *launch) {
 	if req.Model != "" {
 		switch req.Harness {

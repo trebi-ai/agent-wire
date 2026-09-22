@@ -10,8 +10,8 @@ import (
 //
 // A harness that takes the text on the wire keeps it in l.instructions for the
 // driver: Codex sends it as thread/start developerInstructions, OpenCode as
-// system on the first prompt, and the ACP agents get a fenced block prepended
-// to the first prompt.
+// system on the first prompt, OpenCode2 as a per-session instruction entry, and
+// the ACP agents get a fenced block prepended to the first prompt.
 func (rt *Runtime) applyInstructions(ctx context.Context, req *StartRequest, l *launch, text string) error {
 	if strings.TrimSpace(text) == "" {
 		l.instructions = ""
