@@ -1,0 +1,41 @@
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+
+- Initial extraction of the harness subprocess runtime from trebi `internal/runtime/cli` into a public library.
+- One event model over five vendor protocols: Claude stream-json, Codex app-server, OpenCode serve, ACP (Copilot, Cursor, Gemini) and pi RPC. Every harness emits the same event vocabulary and the same terminal `EventExit`.
+- Launch builder. The caller describes the session in `StartRequest`; the library builds the vendor command for new and resumed sessions, and maps model, effort, home, permissions, MCP servers, skills and instructions per harness.
+- `PermissionPolicy`: one policy (`ask`, `auto_edit`, `auto`, `inherit`) for every harness, mapped onto the vendor's own mechanism. A request the policy does not answer becomes an `EventPermission`.
+- `docs/compat.md` records the Phase 0 vendor spike: the exact binary versions, the command behind every verdict, and the surfaces that were confirmed, refuted, or could not be run without a live model turn.
+- MCP injection per session (`StartRequest.MCPServers`), rendered per harness. Injection adds to the user's own servers.
+- Skill injection per session (`StartRequest.Skills`), with three strategies: native load, overlay config dir, and an index in the instructions.
+- Per-session instructions (`StartRequest.Instructions`), rendered per harness.
+- Harness detection (`Runtime.Detect`): binary resolution, version floor, and best-effort login state.
+- Crash ledger. `Runtime.Reconcile` kills positively matched leftover children from a previous process and never touches a reused pid.
+- Shared JSON-RPC client in `internal/jsonrpc`, used by the Codex and ACP drivers, with number and string ids, and with waiter cleanup on timeout, cancel and send error.
+- Go-native wire with no runtime SDK dependency. The vendor SDKs are a test-time fixture oracle only.
+
+### Fixed
+
+- Wire framing. A frame larger than `MaxFrameBytes` emits `EventError` with code `frame_too_large` and parsing continues instead of stalling the child on a full pipe.
+- `EventExit` is delivered after `Close`, instead of being dropped by the emit select.
+- A failed handshake is returned as an error from `Runtime.Start`, not just as an `EventError`.
+- Driver defects carried over from the trebi copy: request waiter leaks, the reused ACP prompt id, the Codex interrupt id, user text parsed as assistant text on OpenCode, model and variant lost on OpenCode prompts, the ACP turn-result flag not reset per turn, and the tracker entry for a tool with no id.
+- Classification. A bare HTTP status number (`401`, `429`, `503`) matches only in error context, so ordinary prose such as "I read 429 files" no longer classifies as a limit error.
+- Claude never received `--permission-prompt-tool stdio`, so the CLI answered prompts itself and never sent `can_use_tool`. The flag is now part of the permission policy, and it is kept in every mode, including `inherit`.
+- OpenCode: the session's done channel was never created, so every finished session panicked while closing it.
+- Codex: an app-server request for a method the library cannot answer is refused with `-32601` instead of being turned into a permission event the peer cannot use.
+- `Runtime.Detect` reports the fake harness as always supported. It has no vendor binary and no login, so it can never be "not installed".
+- The `.cmd`/`.bat` shim refusal moved into portable code, so the message is the same on every platform and the check is compiled everywhere.
+
+### Changed
+
+- `Runtime.SetDriver(h, nil)` now restores the built-in driver for that harness instead of removing it. A caller that injects a driver for a test can always get back to the default table.
+- `PermissionInherit` adds no permission-mode flag, so the operator's own harness configuration decides, while the host prompt callback stays installed.
+- `internal/proc.Proc.Wait` returns `(exitCode int, err error)`.

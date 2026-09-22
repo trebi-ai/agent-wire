@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","session_id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}
+{"type":"control_request","request_id":"req_9_abc12345","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"echo side-effect > /tmp/trebi-perm"},"tool_use_id":"toolu_9","permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"echo *"}]}],"title":"Claude wants to run a command"}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"waiting for permission"}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"allowed","session_id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","usage":{"input_tokens":5,"output_tokens":7}}

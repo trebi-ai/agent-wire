@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","session_id":"deadbeef-0000-1111-2222-333344445555"}
+{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["You have hit your session limit. It will reset in 2 hours."],"session_id":"deadbeef-0000-1111-2222-333344445555"}

@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","session_id":"deadbeef-0000-1111-2222-333344445556"}
+{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["401 Unauthorized: OAuth token has been revoked"],"session_id":"deadbeef-0000-1111-2222-333344445556"}

@@ -1,0 +1,21 @@
+# agentwire lint configuration.
+#
+# A small set: the standard correctness linters, no style opinions.
+run:
+  go: "1.25"
+  timeout: 5m
+  tests: true
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
