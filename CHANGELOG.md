@@ -26,6 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Wire framing. A frame larger than `MaxFrameBytes` emits `EventError` with code `frame_too_large` and parsing continues instead of stalling the child on a full pipe.
+- OpenCode 2: a session created without a model inherited a provider default that could point at an unusable credential. An expired Anthropic OAuth token answered every prompt with "OAuth access token is invalid", while the vendor CLI, which resolves the operator's own default, ran the same prompt. The driver now resolves that default from `~/.config/opencode/opencode.json` (a `provider/model` string, or the 2.x `{providerID, model}` object) when the caller pins no model.
 - `EventExit` is delivered after `Close`, instead of being dropped by the emit select.
 - A failed handshake is returned as an error from `Runtime.Start`, not just as an `EventError`.
 - Driver defects carried over from the trebi copy: request waiter leaks, the reused ACP prompt id, the Codex interrupt id, user text parsed as assistant text on OpenCode, model and variant lost on OpenCode prompts, the ACP turn-result flag not reset per turn, and the tracker entry for a tool with no id.

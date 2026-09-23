@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -120,7 +121,11 @@ func (d openCode2Driver) start(ctx context.Context, req StartRequest, resume boo
 		}
 	} else {
 		body := map[string]any{"location": map[string]any{"directory": dir}}
-		if ref := openCode2ModelRef(req.Model, req.Effort); ref != nil {
+		model := req.Model
+		if model == "" {
+			model = openCode2DefaultModel()
+		}
+		if ref := openCode2ModelRef(model, req.Effort); ref != nil {
 			body["model"] = ref
 		}
 		var res struct {
@@ -262,6 +267,56 @@ func (s *openCode2Session) InterruptTurn(ctx context.Context) error { return s.I
 // openCode2InstructionKey is the per-session instruction entry this library
 // owns. V2 keys are lowercase alphanumerics plus . _ -.
 const openCode2InstructionKey = "agentwire.instructions"
+
+// openCode2DefaultModel is the model the operator's own CLI would use when the
+// caller pins none. V2 needs it on session create: a session created without a
+// model falls back to a provider default that can point at an unusable
+// credential (observed 2026-09-22: an expired Anthropic OAuth token answered
+// every prompt with "OAuth access token is invalid" while the CLI, which
+// resolves this config, ran the same prompt). The file is the operator's
+// global config, not the trebi home: V2 reads the standard directories.
+func openCode2DefaultModel() string {
+	data, err := os.ReadFile(openCode2ConfigPath())
+	if err != nil {
+		return ""
+	}
+	var cfg struct {
+		Model json.RawMessage `json:"model"`
+	}
+	if json.Unmarshal(data, &cfg) != nil || len(cfg.Model) == 0 {
+		return ""
+	}
+	// 1.x stores a "provider/model" string, 2.x stores {providerID, model}.
+	var pinned string
+	if json.Unmarshal(cfg.Model, &pinned) == nil {
+		return strings.TrimSpace(pinned)
+	}
+	var ref struct {
+		ProviderID string `json:"providerID"`
+		Model      string `json:"model"`
+	}
+	if json.Unmarshal(cfg.Model, &ref) != nil || ref.Model == "" {
+		return ""
+	}
+	if ref.ProviderID == "" {
+		return ref.Model
+	}
+	return ref.ProviderID + "/" + ref.Model
+}
+
+// openCode2ConfigPath is the global config file V2 reads: $XDG_CONFIG_HOME
+// first, then ~/.config/opencode/opencode.json.
+func openCode2ConfigPath() string {
+	dir := os.Getenv("XDG_CONFIG_HOME")
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		dir = filepath.Join(home, ".config")
+	}
+	return filepath.Join(dir, "opencode", "opencode.json")
+}
 
 // openCode2ModelRef splits a "provider/model" pin into the shape V2 takes.
 func openCode2ModelRef(model, variant string) map[string]any {

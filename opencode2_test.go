@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -593,6 +595,47 @@ func TestOpenCode2ModelRef(t *testing.T) {
 				t.Errorf("openCode2ModelRef(%q)[%s] = %v, want %v", tt.model, k, got[k], v)
 			}
 		}
+	}
+}
+
+// TestOpenCode2DefaultModel reads the operator's config in both shapes: a
+// session created without a model inherits a provider default that can point
+// at an unusable credential, so the driver resolves what the CLI would use.
+func TestOpenCode2DefaultModel(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	if got := openCode2DefaultModel(); got != "" {
+		t.Fatalf("missing config = %q, want empty", got)
+	}
+	path := filepath.Join(dir, "opencode", "opencode.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(`{"model": {"providerID": "opencode-go", "model": "deepseek-v4.1-flash"}}`)
+	if got := openCode2DefaultModel(); got != "opencode-go/deepseek-v4.1-flash" {
+		t.Errorf("object model = %q", got)
+	}
+	write(`{"model": "anthropic/claude-sonnet-4"}`)
+	if got := openCode2DefaultModel(); got != "anthropic/claude-sonnet-4" {
+		t.Errorf("string model = %q", got)
+	}
+	write(`{"model": {"model": "bare"}}`)
+	if got := openCode2DefaultModel(); got != "bare" {
+		t.Errorf("providerless model = %q", got)
+	}
+	write(`{"username": "x"}`)
+	if got := openCode2DefaultModel(); got != "" {
+		t.Errorf("no model key = %q", got)
+	}
+	write(`{`)
+	if got := openCode2DefaultModel(); got != "" {
+		t.Errorf("malformed config = %q", got)
 	}
 }
 
