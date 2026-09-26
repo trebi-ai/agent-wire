@@ -6,7 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [v0.3.0] - 2026-09-26
+
 ### Added
+
+- The `native` harness constant and the `agentwire.Credentials` type. A consumer registers an in-process driver with `Runtime.SetDriver(agentwire.Native, drv)`; the root module ships no loop.
+- `agentwire.Detector` lets a driver answer `Detect` without a binary. The `native` driver uses it.
+- `Detection.Ready` folds `Supported && Auth == AuthOK` into one field for pickers.
+- The `native` module (`github.com/trebi-ai/agent-wire/native`): an in-process loop that folds one provider stream per turn into message parts, and runs tools, approvals, skills, an MCP session, and a summary compactor. It keeps one message log per session in a `FileStore` that also reads the legacy trebi llm.Message lines.
+- The provider modules `native/provider/anthropic` (official SDK, thinking and web search) and `native/provider/openai` (chat completions over any OpenAI-compatible endpoint).
+- `StartRequest.Credentials` carries the provider credentials of a native session.
+
+## [v0.2.2] - 2026-09-26
+
+### Fixed
+
+- Claude: the phantom tool start keyed by the control `request_id` no longer produces a tool event with no result. A tool start without a matching result settles as cancelled at turn end.
+- Claude: `Permission.ToolUseID` carries the tool-use id, so one UI answer matches one tool call.
+- Claude: a result or exit cancels the open permission requests.
+- Detect: the auth probe caches, and `Runtime.InvalidateDetect` drops the cache after a login or logout.
+
+## [v0.2.1] - 2026-09-26
+
+### Fixed
+
+- The operator default model resolves for OpenCode 2 sessions.
 
 - Initial extraction of the harness subprocess runtime from trebi `internal/runtime/cli` into a public library.
 - One event model over five vendor protocols: Claude stream-json, Codex app-server, OpenCode serve, ACP (Copilot, Cursor, Gemini) and pi RPC. Every harness emits the same event vocabulary and the same terminal `EventExit`.

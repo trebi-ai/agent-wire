@@ -31,8 +31,15 @@ Every cache, server pool, version record and crash ledger hangs off one `Runtime
 | Cursor | `agentwire.Cursor` | `cursor-agent` | ACP over stdin and stdout |
 | Gemini | `agentwire.Gemini` | `gemini` | ACP over stdin and stdout |
 | fake | `agentwire.Fake` | shell script | agentwire NDJSON, for tests |
+| native | `agentwire.Native` | none (in process) | the `native` module: one provider stream per turn, registered with `Runtime.SetDriver` |
 
-`Runtime.Detect` reports whether a binary is installed, its version, whether the version floor is met, and a best-effort login state.
+`Runtime.Detect` reports whether a binary is installed, its version, whether the version floor is met, and a best-effort login state. `native` has no binary: its driver implements `agentwire.Detector`, and the detection reports the credential state.
+
+## The native module
+
+`native` is a separate Go module (`github.com/trebi-ai/agent-wire/native`). It holds an in-process loop: it folds one provider stream per turn into message parts, runs tools, approvals, skills, an MCP session, and a summary compactor, and keeps one message log per session in a `FileStore`. Two provider modules give it a model: `native/provider/anthropic` and `native/provider/openai` (OpenAI-compatible endpoints, so Ollama, OpenRouter, vLLM, Groq, and LM Studio work through `base_url`). The root module stays provider-free.
+
+A consumer builds a `native.Config`, gets a driver with `native.NewDriver`, and registers it with `Runtime.SetDriver(agentwire.Native, drv)`. `Config.Credentials` resolves the key per session, `Config.ToolSetFuncs` opens consumer tools per session, and `Config.BeforeCall`/`AfterCall` carry quota bookkeeping.
 
 ## Getting started
 
