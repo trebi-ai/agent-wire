@@ -14,6 +14,9 @@ const (
 	EventInit EventType = "init"
 	// EventAssistant is assistant text; Delta=true means a stream delta.
 	EventAssistant EventType = "assistant"
+	// EventThought is reasoning text the model surfaces separately from the
+	// answer; Delta works as for EventAssistant.
+	EventThought EventType = "thought"
 	// EventUser echoes a user turn (prompt write).
 	EventUser EventType = "user"
 	// EventTool is a tool lifecycle event (started/completed/failed).

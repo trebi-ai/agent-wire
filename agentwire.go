@@ -31,6 +31,19 @@ import (
 // Harness identifies one vendor coding agent.
 type Harness string
 
+// Credentials are the provider credentials a native session runs with.
+type Credentials struct {
+	// Format names the provider wire: "anthropic" or "openai".
+	Format string
+	// BaseURL overrides the provider endpoint. Empty uses the provider
+	// default; an http(s) URL turns the SDK into a gateway client.
+	BaseURL string
+	// APIKey is the bearer credential.
+	APIKey string
+	// Headers are extra HTTP headers for every provider call.
+	Headers map[string]string
+}
+
 const (
 	Claude    Harness = "claude"
 	Codex     Harness = "codex"
@@ -41,11 +54,15 @@ const (
 	Cursor    Harness = "cursor"
 	Gemini    Harness = "gemini"
 	Fake      Harness = "fake"
+	// Native is the in-process harness the native module serves. It is not
+	// in New's built-in driver table: a consumer registers it with
+	// SetDriver(Native, nativedriver) or leaves it out entirely.
+	Native Harness = "native"
 )
 
 // Harnesses lists every harness the library can drive a wire for.
 func Harnesses() []Harness {
-	return []Harness{Claude, Codex, OpenCode, OpenCode2, Pi, Copilot, Cursor, Gemini, Fake}
+	return []Harness{Claude, Codex, OpenCode, OpenCode2, Pi, Copilot, Cursor, Gemini, Fake, Native}
 }
 
 // Options configures a Runtime.
@@ -144,6 +161,11 @@ type StartRequest struct {
 	MCPServers   []MCPServer
 	Skills       []Skill
 	Instructions string
+
+	// Credentials carries the provider credentials for the native harness
+	// only. The library never reads env or secrets to fill it, and the CLI
+	// drivers ignore it.
+	Credentials *Credentials
 
 	// OneShot writes OneShotPrompt and closes stdin, so the child exits after
 	// the turn. Use it for a job with no follow-up surface.

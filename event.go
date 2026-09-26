@@ -42,6 +42,7 @@ type SessionStatus = wire.SessionStatus
 const (
 	EventInit       = wire.EventInit
 	EventAssistant  = wire.EventAssistant
+	EventThought    = wire.EventThought
 	EventUser       = wire.EventUser
 	EventTool       = wire.EventTool
 	EventPermission = wire.EventPermission

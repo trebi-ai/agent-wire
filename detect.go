@@ -51,6 +51,9 @@ type Detection struct {
 	Version string
 	// Supported reports that the binary exists and meets the version floor.
 	Supported bool
+	// Ready reports Supported && Auth == AuthOK. Runtime.Detect sets it for
+	// every harness, so a picker reads one field.
+	Ready bool
 	// Auth is the best-effort login state.
 	Auth AuthState
 	// AuthDetail is a short note from the auth probe, such as an account
@@ -60,6 +63,12 @@ type Detection struct {
 	Features Features
 	// Detail explains an unsupported verdict.
 	Detail string
+}
+
+// Detector lets a driver answer Detect without a binary lookup. The native
+// driver implements it: it is in-process and has no binary to find.
+type Detector interface {
+	Detect(ctx context.Context) (Detection, error)
 }
 
 // versionFloor is the minimum vendor version this library was written against.
@@ -81,6 +90,8 @@ func featuresFor(h Harness) Features {
 		return Features{MCPInject: MCPFlags, SkillsInject: SkillNative, Instructions: true, Resume: true, Permissions: true}
 	case Copilot, Cursor, Gemini:
 		return Features{MCPInject: MCPSession, SkillsInject: SkillInstructions, Instructions: true, Attachments: true, Resume: true, Permissions: true, FS: true}
+	case Native:
+		return Features{MCPInject: MCPSession, SkillsInject: SkillNative, Instructions: true, Attachments: true, Resume: true, Permissions: true, FS: true}
 	case Fake:
 		return Features{SkillsInject: SkillInstructions, Instructions: true, Resume: true, Permissions: true}
 	}
@@ -88,7 +99,8 @@ func featuresFor(h Harness) Features {
 }
 
 // Detect probes one harness: binary, version, floor and login state. A missing
-// binary is a supported=false verdict, not an error.
+// binary is a supported=false verdict, not an error. A driver that implements
+// Detector answers for itself without a binary lookup.
 func (rt *Runtime) Detect(ctx context.Context, h Harness) (Detection, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -99,7 +111,22 @@ func (rt *Runtime) Detect(ctx context.Context, h Harness) (Detection, error) {
 		// has no vendor binary to find and no login, so it is always usable.
 		d.Supported = true
 		d.Auth = AuthOK
+		d.Ready = true
 		return d, nil
+	}
+	if driver, ok := rt.Driver(h); ok {
+		if det, implements := driver.(Detector); implements {
+			dd, err := det.Detect(ctx)
+			if err != nil {
+				return d, err
+			}
+			dd.Harness = h
+			if dd.Features == (Features{}) {
+				dd.Features = featuresFor(h)
+			}
+			dd.Ready = dd.Supported && dd.Auth == AuthOK
+			return dd, nil
+		}
 	}
 	if _, ok := rt.Driver(h); !ok {
 		d.Detail = "no proven subprocess wire for this harness"
@@ -120,6 +147,7 @@ func (rt *Runtime) Detect(ctx context.Context, h Harness) (Detection, error) {
 	}
 	d.Supported = true
 	d.Auth, d.AuthDetail = rt.probeAuth(ctx, h, d.Path)
+	d.Ready = d.Auth == AuthOK
 	return d, nil
 }
 
