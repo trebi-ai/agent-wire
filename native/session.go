@@ -47,8 +47,10 @@ type sessionOpts struct {
 	maxOutputTokens int
 	contextTokens   int
 	approver        Approver
+	effort          string
 	beforeCall      func(context.Context) error
 	afterCall       func(context.Context, Usage)
+	closeTools      func()
 }
 
 // nativeTool pairs a tool with its spec.
@@ -193,6 +195,7 @@ func (s *session) streamCall(ctx context.Context, turn int) (string, Usage, []To
 		Messages:        s.snapshot(),
 		Tools:           s.specs(),
 		MaxOutputTokens: s.opts.maxOutputTokens,
+		Effort:          s.opts.effort,
 	}
 	var finish *Finish
 	for part, err := range s.model.Stream(ctx, req) {
@@ -467,6 +470,9 @@ func (s *session) Close(context.Context) error {
 	s.closed.Do(func() {
 		if s.turnStop != nil {
 			s.turnStop()
+		}
+		if s.opts.closeTools != nil {
+			s.opts.closeTools()
 		}
 		close(s.done)
 		close(s.events)

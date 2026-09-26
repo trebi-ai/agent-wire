@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/trebi-ai/agent-wire"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/trebi-ai/agent-wire"
 )
 
 // Config is the consumer-side configuration of the native driver. The
@@ -26,9 +26,15 @@ type Config struct {
 	// ToolSets are the consumer's own tools, next to the session's MCP
 	// servers and the built-in file tools.
 	ToolSets []ToolSet
+	// ToolSetFuncs open one ToolSet per session. Use them for tools that
+	// cannot be shared, such as an in-process MCP transport pair.
+	ToolSetFuncs []func(ctx context.Context) (ToolSet, error)
 	// BuiltinTools roots the built-in read, write, edit, glob, grep, and
 	// bash tools at StartRequest.WorkingDir.
 	BuiltinTools bool
+	// MaxFileBytes caps one read or write of the built-in file tools.
+	// Zero uses a 10 MiB default.
+	MaxFileBytes int64
 	// Store persists the message log. Nil keeps no log and resume never
 	// finds anything.
 	Store Store
@@ -59,8 +65,32 @@ type Driver struct {
 	log logger
 
 	mu       sync.Mutex
-	toolSets []ToolSet // opened MCP sets, closed with the driver
+	nextID   int
+	openSets map[int]ToolSet // per-session sets, closed with the driver
 	closed   bool
+}
+
+// track registers one opened set under a stable id. The ids avoid
+// comparing ToolSet values, which may hold uncomparable slices.
+func (d *Driver) track(ts ToolSet) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.openSets == nil {
+		d.openSets = map[int]ToolSet{}
+	}
+	d.nextID++
+	d.openSets[d.nextID] = ts
+	return d.nextID
+}
+
+func (d *Driver) untrack(id int) {
+	d.mu.Lock()
+	ts := d.openSets[id]
+	delete(d.openSets, id)
+	d.mu.Unlock()
+	if ts != nil {
+		_ = ts.Close()
+	}
 }
 
 type logger interface {
@@ -172,6 +202,7 @@ func (d *Driver) open(ctx context.Context, req agentwire.StartRequest) (agentwir
 		maxOutputTokens: d.cfg.MaxOutputTokens,
 		contextTokens:   d.cfg.ContextTokens,
 		approver:        approver,
+		effort:          req.Effort,
 		beforeCall: func(ctx context.Context) error {
 			if d.cfg.BeforeCall == nil {
 				return nil
@@ -184,6 +215,8 @@ func (d *Driver) open(ctx context.Context, req agentwire.StartRequest) (agentwir
 			}
 		},
 	}, tools, skills)
+	// The session owns its tool sets: Close closes them (plan I.6).
+	s.opts.closeTools = closeTools
 
 	// The default approver: an ask the policy does not answer surfaces as
 	// one EventPermission and the loop waits for AnswerPermission.
@@ -220,14 +253,11 @@ func (d *Driver) open(ctx context.Context, req agentwire.StartRequest) (agentwir
 // MCPToolSet per StartRequest.MCPServer, and the built-in file tools.
 func (d *Driver) assembleTools(ctx context.Context, req agentwire.StartRequest) ([]nativeTool, func(), error) {
 	var out []nativeTool
-	var opened []ToolSet
+	var opened []int
 	closeOpened := func() {
-		for _, ts := range opened {
-			_ = ts.Close()
+		for _, id := range opened {
+			d.untrack(id)
 		}
-		d.mu.Lock()
-		d.toolSets = removeFrom(d.toolSets, opened...)
-		d.mu.Unlock()
 	}
 	fail := func(err error) ([]nativeTool, func(), error) {
 		closeOpened()
@@ -235,18 +265,27 @@ func (d *Driver) assembleTools(ctx context.Context, req agentwire.StartRequest) 
 	}
 
 	sets := append([]ToolSet(nil), d.cfg.ToolSets...)
+	for _, f := range d.cfg.ToolSetFuncs {
+		ts, err := f(ctx)
+		if err != nil {
+			return fail(err)
+		}
+		sets = append(sets, ts)
+		opened = append(opened, d.track(ts))
+	}
 	for _, srv := range req.MCPServers {
 		ts, err := MCPToolSet(ctx, srv, &mcp.Implementation{Name: "agentwire", Version: "native"})
 		if err != nil {
 			return fail(fmt.Errorf("native: mcp server %s: %w", srv.Name, err))
 		}
 		sets = append(sets, ts)
-		opened = append(opened, ts)
+		opened = append(opened, d.track(ts))
 	}
 	if d.cfg.BuiltinTools {
 		sets = append(sets, StaticTools("fs", newBuiltinTools(builtinOptions{
-			Root: req.WorkingDir,
-			Env:  envSlice(req.Env),
+			Root:         req.WorkingDir,
+			Env:          envSlice(req.Env),
+			MaxFileBytes: d.cfg.MaxFileBytes,
 		})...))
 	}
 	for _, ts := range sets {
@@ -259,40 +298,20 @@ func (d *Driver) assembleTools(ctx context.Context, req agentwire.StartRequest) 
 			out = append(out, nativeTool{tool: t, spec: spec})
 		}
 	}
-	d.mu.Lock()
-	d.toolSets = append(d.toolSets, opened...)
-	d.mu.Unlock()
 	return out, closeOpened, nil
 }
 
 // Close closes the driver and every MCP tool set it opened.
 func (d *Driver) Close() error {
 	d.mu.Lock()
-	sets := d.toolSets
-	d.toolSets = nil
+	sets := d.openSets
+	d.openSets = nil
 	d.closed = true
 	d.mu.Unlock()
 	for _, ts := range sets {
 		_ = ts.Close()
 	}
 	return nil
-}
-
-func removeFrom(list []ToolSet, gone ...ToolSet) []ToolSet {
-	out := list[:0]
-	for _, ts := range list {
-		drop := false
-		for _, g := range gone {
-			if ts == g {
-				drop = true
-				break
-			}
-		}
-		if !drop {
-			out = append(out, ts)
-		}
-	}
-	return out
 }
 
 func envSlice(env map[string]string) []string {
