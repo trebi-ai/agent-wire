@@ -25,6 +25,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Claude: an auto-answered `can_use_tool` control request emitted a second tool `started` event keyed by the control `request_id` (a UUID). Nothing completed that id, so every auto-allowed tool left a phantom chip in a transcript, a duplicate of the real one, and one leaked id disabled stall detection for the rest of the session. The driver no longer emits a tool event on the auto-answer path: the `tool_use` block already announced the start, and the `tool_result` completes the same id. On `result` and on process exit the driver closes every tool still open as `cancelled`, and the tracker clears its in-flight table on `result` and `exit`.
+- `Permission` events carry `ToolUseID` when the vendor supplies it, so a consumer can join an approval card to its tool chip.
+- `Detect` caches the vendor login probe per harness and binary behind a TTL (`Options.AuthCacheTTL`, default 5 min, negative disables) with single-flight on a miss. A consumer calls `Runtime.InvalidateDetect(harness)` after a login or a logout. Repeated `Detect` calls no longer spawn a process.
 - Wire framing. A frame larger than `MaxFrameBytes` emits `EventError` with code `frame_too_large` and parsing continues instead of stalling the child on a full pipe.
 - OpenCode 2: a session created without a model inherited a provider default that could point at an unusable credential. An expired Anthropic OAuth token answered every prompt with "OAuth access token is invalid", while the vendor CLI, which resolves the operator's own default, ran the same prompt. The driver now resolves that default from `~/.config/opencode/opencode.json` (a `provider/model` string, or the 2.x `{providerID, model}` object) when the caller pins no model.
 - `EventExit` is delivered after `Close`, instead of being dropped by the emit select.

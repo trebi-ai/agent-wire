@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/trebi-ai/agent-wire/internal/flight"
 	"github.com/trebi-ai/agent-wire/internal/wire"
 )
 
@@ -65,6 +66,9 @@ type Options struct {
 	MaxFrameBytes int
 	// OnStderr receives live stderr lines from every child.
 	OnStderr func(Harness, string)
+	// AuthCacheTTL is how long a harness login probe answers from cache.
+	// Zero uses 5 min. A negative value disables the cache.
+	AuthCacheTTL time.Duration
 }
 
 // Session is one vendor conversation. The caller holds it for the life of the
@@ -194,6 +198,13 @@ type Runtime struct {
 	vers  *versionCache
 	maxFr int
 
+	// auth caches login probes per harness and binary, with single-flight on
+	// a miss. A probe spawns a process; Detect must stay cheap.
+	authMu   sync.Mutex
+	auth     map[authKey]authEntry
+	authFlt  flight.Group[authKey, authEntry]
+	authTTL  time.Duration
+
 	mu      sync.RWMutex
 	drivers map[Harness]Driver
 	// builtin is the table New installs. SetDriver(h, nil) restores from it.
@@ -212,10 +223,12 @@ func New(opts Options) *Runtime {
 		log = slog.New(slog.DiscardHandler)
 	}
 	rt := &Runtime{
-		opts:  opts,
-		log:   log,
-		maxFr: opts.MaxFrameBytes,
-		vers:  newVersionCache(),
+		opts:    opts,
+		log:     log,
+		maxFr:   opts.MaxFrameBytes,
+		vers:    newVersionCache(),
+		auth:    map[authKey]authEntry{},
+		authTTL: opts.AuthCacheTTL,
 	}
 	if rt.maxFr <= 0 {
 		rt.maxFr = wire.DefaultMaxFrameBytes

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -266,5 +267,89 @@ func TestSemverAtLeastAndParse(t *testing.T) {
 			t.Fatalf("parseSemver(%q) = (%d, %d, %d), want (%d, %d, %d)",
 				tc.in, major, minor, patch, tc.major, tc.minor, tc.patch)
 		}
+	}
+}
+
+// writeCountingClaude installs a fake claude that logs one line per
+// `auth status` run and always reports a logged-in account.
+func writeCountingClaude(t *testing.T, dir, countFile string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("counting stub is POSIX shell")
+	}
+	script := "#!/bin/sh\n" +
+		`if [ "$1" = "--version" ]; then echo 2.1.0; exit 0; fi
+if [ "$1" = "auth" ]; then echo run >> ` + countFile + `; echo '{"loggedIn":true}'; exit 0; fi
+exit 1
+`
+	path := filepath.Join(dir, "claude")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write counting claude: %v", err)
+	}
+}
+
+func countRuns(t *testing.T, countFile string) int {
+	t.Helper()
+	b, err := os.ReadFile(countFile)
+	if err != nil {
+		return 0
+	}
+	return len(strings.Split(strings.TrimSpace(string(b)), "\n"))
+}
+
+// TestDetectCachesAuthProbe pins the plan 2026-09-26 H cache: repeated Detect
+// calls reuse one login probe, InvalidateDetect forces a fresh one, and
+// concurrent misses share a single probe.
+func TestDetectCachesAuthProbe(t *testing.T) {
+	dir := t.TempDir()
+	countFile := filepath.Join(dir, "count")
+	writeCountingClaude(t, dir, countFile)
+	t.Setenv("PATH", dir)
+	rt := launchTestRuntime(t)
+	ctx := context.Background()
+
+	if _, err := rt.Detect(ctx, Claude); err != nil {
+		t.Fatalf("first Detect: %v", err)
+	}
+	d, err := rt.Detect(ctx, Claude)
+	if err != nil {
+		t.Fatalf("second Detect: %v", err)
+	}
+	if d.Auth != AuthOK {
+		t.Fatalf("Auth = %q, want ok", d.Auth)
+	}
+	if got := countRuns(t, countFile); got != 1 {
+		t.Fatalf("auth probe ran %d times, want 1", got)
+	}
+
+	rt.InvalidateDetect(Claude)
+	if _, err := rt.Detect(ctx, Claude); err != nil {
+		t.Fatalf("Detect after invalidate: %v", err)
+	}
+	if got := countRuns(t, countFile); got != 2 {
+		t.Fatalf("auth probe ran %d times after invalidate, want 2", got)
+	}
+}
+
+func TestDetectConcurrentMissRunsOneProbe(t *testing.T) {
+	dir := t.TempDir()
+	countFile := filepath.Join(dir, "count")
+	writeCountingClaude(t, dir, countFile)
+	t.Setenv("PATH", dir)
+	rt := launchTestRuntime(t)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := rt.Detect(context.Background(), Claude); err != nil {
+				t.Errorf("Detect: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := countRuns(t, countFile); got != 1 {
+		t.Fatalf("auth probe ran %d times under concurrency, want 1", got)
 	}
 }

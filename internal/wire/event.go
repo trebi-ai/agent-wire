@@ -114,6 +114,9 @@ type Permission struct {
 	Question string
 	Input    string
 	Options  []string
+	// ToolUseID is the tool_use id the request belongs to, when the vendor
+	// carries it. A consumer joins an approval card to its tool chip.
+	ToolUseID string
 }
 
 // Decision answers a Permission. Message is shown to the model on deny.

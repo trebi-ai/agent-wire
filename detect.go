@@ -337,17 +337,87 @@ var authProbes = map[Harness]authProbe{
 }
 
 // probeAuth reports the best-effort login state. It never returns an error:
-// an inconclusive probe is AuthUnknown.
+// an inconclusive probe is AuthUnknown. The subprocess probe answers from a
+// TTL cache with single-flight on a miss (plan 2026-09-26 H); the environment
+// check stays outside, because it is free and always current.
 func (rt *Runtime) probeAuth(ctx context.Context, h Harness, bin string) (AuthState, string) {
 	for _, key := range authEnvKeys[h] {
 		if os.Getenv(key) != "" {
 			return AuthOK, "key " + key
 		}
 	}
-	probe, ok := authProbes[h]
-	if !ok {
+	if _, ok := authProbes[h]; !ok {
 		return AuthUnknown, ""
 	}
+	ttl := rt.authTTL
+	if ttl == 0 {
+		ttl = defaultAuthTTL
+	}
+	key := authKey{harness: h, bin: bin}
+	if ttl > 0 {
+		rt.authMu.Lock()
+		e, ok := rt.auth[key]
+		rt.authMu.Unlock()
+		if ok && time.Since(e.at) < ttl {
+			return e.state, e.detail
+		}
+	}
+	e, err := rt.authFlt.Do(key, func() (authEntry, error) {
+		if ttl > 0 {
+			rt.authMu.Lock()
+			cached, ok := rt.auth[key]
+			rt.authMu.Unlock()
+			if ok && time.Since(cached.at) < ttl {
+				return cached, nil
+			}
+		}
+		state, detail := runAuthProbe(ctx, h, bin)
+		e := authEntry{at: time.Now(), state: state, detail: detail}
+		if ttl > 0 {
+			rt.authMu.Lock()
+			rt.auth[key] = e
+			rt.authMu.Unlock()
+		}
+		return e, nil
+	})
+	if err != nil {
+		return AuthUnknown, ""
+	}
+	return e.state, e.detail
+}
+
+// InvalidateDetect drops the cached login probes of one harness. A consumer
+// calls it after a login or a logout, so Detect sees the new state at once.
+func (rt *Runtime) InvalidateDetect(h Harness) {
+	rt.authMu.Lock()
+	for key := range rt.auth {
+		if key.harness == h {
+			delete(rt.auth, key)
+		}
+	}
+	rt.authMu.Unlock()
+}
+
+// authKey names one cached probe.
+type authKey struct {
+	harness Harness
+	bin     string
+}
+
+// authEntry is one cached login probe.
+type authEntry struct {
+	at     time.Time
+	state  AuthState
+	detail string
+}
+
+// defaultAuthTTL bounds a cached login probe. A login state changes rarely,
+// and every Detect call would otherwise spawn a process.
+const defaultAuthTTL = 5 * time.Minute
+
+// runAuthProbe runs the vendor login-status command for one harness.
+func runAuthProbe(ctx context.Context, h Harness, bin string) (AuthState, string) {
+	probe := authProbes[h]
 	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(probeCtx, bin, probe.args...).CombinedOutput()

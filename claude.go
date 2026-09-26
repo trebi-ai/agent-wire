@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -409,6 +410,9 @@ func (p *claudeProtocol) parseResult(m map[string]any) []Event {
 	p.mu.Lock()
 	p.sawResult = true
 	p.mu.Unlock()
+	// Every tool still open when the turn ends is over; the vendor stream
+	// lost its completion (plan 2026-09-26 B). Close them as cancelled.
+	out := p.cancelOpenTools()
 	subtype := str(m["subtype"])
 	isErr, _ := m["is_error"].(bool)
 	res := &Result{
@@ -428,7 +432,28 @@ func (p *claudeProtocol) parseResult(m map[string]any) []Event {
 		res.EndReason = string(c.Class)
 		res.Code = c.Code
 	}
-	return []Event{{Type: EventResult, Result: res, SessionID: res.SessionID}}
+	return append(out, Event{Type: EventResult, Result: res, SessionID: res.SessionID})
+}
+
+// cancelOpenTools emits one cancelled tool event per open tool_use id and
+// clears the table (plan 2026-09-26 B).
+func (p *claudeProtocol) cancelOpenTools() []Event {
+	p.mu.Lock()
+	ids := make([]string, 0, len(p.tools))
+	for id := range p.tools {
+		ids = append(ids, id)
+	}
+	clear(p.tools)
+	p.mu.Unlock()
+	if len(ids) == 0 {
+		return nil
+	}
+	sort.Strings(ids)
+	out := make([]Event, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, Event{Type: EventTool, Tool: &ToolEvent{ID: id, Status: "cancelled"}})
+	}
+	return out
 }
 
 // resultFrameText ports the SDK's error result text picker: errors[], then
@@ -530,7 +555,10 @@ func (p *claudeProtocol) parseControlRequest(m map[string]any) []Event {
 	kind := classifyPermissionKind(tool, input)
 	if d, ok := p.policy.Answer(kind, tool); ok {
 		// The policy answers without the consumer; record the input so the
-		// allow response carries it back unchanged.
+		// allow response carries it back unchanged. No tool event: the
+		// tool_use block already announced the start, and the tool_result
+		// carries the same tool_use id (plan 2026-09-26 B). An event keyed
+		// by the control request_id would never complete.
 		p.mu.Lock()
 		p.pending[id] = raw
 		p.mu.Unlock()
@@ -540,9 +568,7 @@ func (p *claudeProtocol) parseControlRequest(m map[string]any) []Event {
 				_ = w.Write(frame)
 			}
 		}
-		return []Event{{Type: EventTool, Tool: &ToolEvent{
-			ID: id, Name: tool, Kind: kind, Input: input, Status: "started",
-		}}}
+		return nil
 	}
 	question := firstNonEmpty(str(request["title"]), str(request["description"]), "Allow "+tool+"?")
 	if len(raw) > 0 {
@@ -552,16 +578,19 @@ func (p *claudeProtocol) parseControlRequest(m map[string]any) []Event {
 	}
 	return []Event{{Type: EventPermission, Permission: &Permission{
 		ID: id, Tool: tool, Kind: kind, Question: question, Input: input,
+		ToolUseID: str(request["tool_use_id"]),
 	}}}
 }
 
 // Exit classifies a process exit that never produced a result frame.
 func (p *claudeProtocol) Exit(code int, err error, stderr string) []Event {
+	// Tools left open die with the process (plan 2026-09-26 B).
+	out := p.cancelOpenTools()
 	p.mu.Lock()
 	saw := p.sawResult
 	p.mu.Unlock()
 	if saw {
-		return nil
+		return out
 	}
 	text := strings.TrimSpace(stderr)
 	if text == "" {
@@ -572,7 +601,7 @@ func (p *claudeProtocol) Exit(code int, err error, stderr string) []Event {
 		}
 	}
 	c := ClassifyFor(Claude, text, 0)
-	return []Event{{Type: EventError, Error: text, Code: c.Code, EndReason: string(c.Class)}}
+	return append(out, Event{Type: EventError, Error: text, Code: c.Code, EndReason: string(c.Class)})
 }
 
 func contentBlocks(v any) []map[string]any {

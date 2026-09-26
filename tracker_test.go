@@ -181,3 +181,37 @@ func TestTrackerPermissionAddedRegistersHookApproval(t *testing.T) {
 		t.Fatalf("state after every decision: %+v", snap)
 	}
 }
+
+// TestTrackerResultClearsInflight pins the plan 2026-09-26 B fix: a tool
+// event that never completes (a leaked phantom id) must not keep the turn
+// progressing forever. The result and the exit clear the table.
+func TestTrackerResultClearsInflight(t *testing.T) {
+	t.Parallel()
+	tr := NewTracker()
+	tr.PromptWritten()
+	tr.Observe(Event{Type: EventTool, Tool: &ToolEvent{ID: "toolu_ok", Name: "Bash", Status: "started"}})
+	tr.Observe(Event{Type: EventTool, Tool: &ToolEvent{ID: "phantom", Name: "mcp__trebi__job", Status: "started"}})
+	tr.Observe(Event{Type: EventTool, Tool: &ToolEvent{ID: "toolu_ok", Name: "Bash", Status: "completed"}})
+	if got := tr.InflightCount(); got != 1 {
+		t.Fatalf("inflight before the result = %d, want 1 (the phantom)", got)
+	}
+	snap := tr.Observe(Event{Type: EventResult, Result: &Result{Subtype: "success"}})
+	if snap.InflightTools != 0 {
+		t.Fatalf("the result left a tool in flight: %+v", snap)
+	}
+	if snap.Progressing {
+		t.Fatalf("an ended turn must not report progress: %+v", snap)
+	}
+	if snap.Stalled {
+		t.Fatalf("an idle turn is not stalled: %+v", snap)
+	}
+
+	// The exit path clears too.
+	tr2 := NewTracker()
+	tr2.PromptWritten()
+	tr2.Observe(Event{Type: EventTool, Tool: &ToolEvent{ID: "x", Name: "Bash", Status: "started"}})
+	snap = tr2.Observe(Event{Type: EventExit})
+	if snap.InflightTools != 0 || snap.TurnActive {
+		t.Fatalf("the exit left state behind: %+v", snap)
+	}
+}

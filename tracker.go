@@ -103,6 +103,11 @@ func (t *Tracker) Observe(e Event) Snapshot {
 	case EventResult:
 		t.turnActive = false
 		t.stallSince = time.Time{}
+		// The turn is over: nothing can still be running (plan
+		// 2026-09-26 B). A leaked phantom id must not hold stall
+		// detection open for the rest of the session.
+		clear(t.inflight)
+		t.pendingAuto = nil
 		if e.Result != nil {
 			r := *e.Result
 			t.lastResult = &r
@@ -113,6 +118,8 @@ func (t *Tracker) Observe(e Event) Snapshot {
 	case EventExit:
 		t.exited = true
 		t.turnActive = false
+		clear(t.inflight)
+		t.pendingAuto = nil
 		t.idleSince = now
 	case EventError:
 		if e.ExitCode != nil || e.EndReason != "" || e.Error != "" {

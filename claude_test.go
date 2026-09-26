@@ -561,11 +561,11 @@ func TestClaudePermissionAutoAnswer(t *testing.T) {
 			if inner["behavior"] != "allow" {
 				t.Fatalf("auto answer behavior = %+v", inner)
 			}
-			// The tool still shows up in the stream: the consumer lost only
-			// the question, not the activity.
-			tool := cpTestFirstEvent(evs, EventTool)
-			if tool == nil || tool.Tool == nil || tool.Tool.Name != tc.tool || tool.Tool.Status != "started" {
-				t.Fatalf("auto answer lost the tool event: %+v", evs)
+			// The tool_use block already announced the start, and the
+			// tool_result will complete it. An extra event keyed by the
+			// control request_id would never complete (plan 2026-09-26 B).
+			if tool := cpTestFirstEvent(evs, EventTool); tool != nil {
+				t.Fatalf("auto answer emitted a phantom tool event: %+v", tool.Tool)
 			}
 		})
 	}
@@ -843,5 +843,96 @@ func TestClaudeExitClassification(t *testing.T) {
 	after.Parse([]byte(`{"type":"result","subtype":"success","is_error":false,"result":"done"}`))
 	if evs := after.Exit(1, nil, "Invalid API key"); len(evs) != 0 {
 		t.Fatalf("exit after a result = %+v", evs)
+	}
+}
+
+// TestClaudeMCPAutoAllowFixture replays the recorded auto-allowed MCP call
+// (plan 2026-09-26 B): the policy answers the can_use_tool control request,
+// and the only tool events carry the toolu_ id — never the control
+// request_id. Every started id ends completed.
+func TestClaudeMCPAutoAllowFixture(t *testing.T) {
+	t.Parallel()
+	proto := cpTestClaudeProto(t, PermissionPolicy{AllowTools: []string{"mcp__trebi__*"}})
+	evs := cpTestClaudeParseFile(t, proto, "testdata/claude/0.3.273-2.1.267/mcp_auto_allow.ndjson")
+
+	var ids []string
+	starts, ends := map[string]bool{}, map[string]bool{}
+	for _, e := range evs {
+		if e.Type != EventTool || e.Tool == nil {
+			continue
+		}
+		ids = append(ids, e.Tool.ID)
+		if e.Tool.ID == "2a53d801-0b9a-49a1-8073-c1fb604130c3" {
+			t.Fatalf("a tool event is keyed by the control request_id: %+v", e.Tool)
+		}
+		switch e.Tool.Status {
+		case "started":
+			starts[e.Tool.ID] = true
+		case "completed", "failed", "cancelled":
+			ends[e.Tool.ID] = true
+		}
+	}
+	if len(ids) == 0 {
+		t.Fatalf("no tool events: %+v", evs)
+	}
+	for _, e := range evs {
+		if e.Type == EventPermission && e.Permission != nil && e.Permission.ToolUseID != "toolu_01AutoAllowMcp" {
+			t.Fatalf("permission event lost the tool_use id: %+v", e.Permission)
+		}
+	}
+	for id := range starts {
+		if !ends[id] {
+			t.Fatalf("tool %q started but never ended: %+v", id, ids)
+		}
+	}
+}
+
+// TestClaudeResultClosesOpenTools pins the cancelled drain: a start with no
+// tool_result, then the result frame, gives one cancelled event per open id.
+func TestClaudeResultClosesOpenTools(t *testing.T) {
+	t.Parallel()
+	proto := cpTestClaudeProto(t, PermissionPolicy{})
+
+	proto.Parse([]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_lost","name":"Bash","input":{"command":"ls"}}]}}`))
+	evs := proto.Parse([]byte(`{"type":"result","subtype":"success","is_error":false,"result":"done"}`))
+
+	var cancelled int
+	sawResult := false
+	for _, e := range evs {
+		if e.Type == EventTool && e.Tool != nil && e.Tool.Status == "cancelled" {
+			if e.Tool.ID != "toolu_lost" {
+				t.Fatalf("cancelled event for the wrong id: %+v", e.Tool)
+			}
+			cancelled++
+		}
+		if e.Type == EventResult {
+			sawResult = true
+		}
+	}
+	if !sawResult || cancelled != 1 {
+		t.Fatalf("result events=%v cancelled=%d, want one result then one cancelled", evs, cancelled)
+	}
+
+	// The table is clear: a second result drains nothing.
+	if evs := proto.Parse([]byte(`{"type":"result","subtype":"success","is_error":false,"result":"again"}`)); len(evs) != 1 || evs[0].Type != EventResult {
+		t.Fatalf("second result events = %+v", evs)
+	}
+}
+
+// TestClaudeExitCancelsOpenTools covers the process-exit drain.
+func TestClaudeExitCancelsOpenTools(t *testing.T) {
+	t.Parallel()
+	proto := cpTestClaudeProto(t, PermissionPolicy{})
+	proto.Parse([]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_dead","name":"Write","input":"{}"}]}}`))
+
+	evs := proto.Exit(1, nil, "segfault")
+	if len(evs) != 2 {
+		t.Fatalf("exit events = %+v", evs)
+	}
+	if evs[0].Type != EventTool || evs[0].Tool.Status != "cancelled" || evs[0].Tool.ID != "toolu_dead" {
+		t.Fatalf("first exit event = %+v", evs[0])
+	}
+	if evs[1].Type != EventError {
+		t.Fatalf("second exit event = %+v", evs[1])
 	}
 }
