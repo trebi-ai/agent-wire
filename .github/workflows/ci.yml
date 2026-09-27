@@ -13,19 +13,23 @@ env:
 
 jobs:
   test:
-    name: test (${{ matrix.os }})
+    name: test (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - { name: linux, os: [self-hosted, Linux, X64] }
+          - { name: macos, os: [self-hosted, macOS, ARM64] }
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: true
+          # The self-hosted runners keep the module cache on disk; uploading
+          # it as an Actions cache takes longer than the build.
+          cache: false
 
       - name: go vet
         run: go vet ./...
@@ -44,6 +48,6 @@ jobs:
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-ubuntu
+          name: coverage-linux
           path: coverage.out
           if-no-files-found: error
