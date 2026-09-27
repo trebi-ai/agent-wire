@@ -10,6 +10,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `ClaudeMCPConfig`, `CodexMCPArgs`, and `OpenCodeConfigContent` render injected MCP servers outside a launch, so a consumer that starts the harness itself (the trebi pane runtime) writes the same config as the CLI runtime.
 
+### Fixed
+
+- The native driver tracks its open tool sets by id, so a session that opens and closes several sets never compares `ToolSet` values.
+
+## [v0.3.1] - 2026-09-27
+
+### Added
+
+- `ClaudeMCPConfig`, `CodexMCPArgs`, and `OpenCodeConfigContent` render injected MCP servers outside a launch, so a consumer that starts the harness itself (the trebi pane runtime) writes the same config as the CLI runtime.
+
+## [native/v0.2.3] - 2026-09-27
+
+### Fixed
+
+- The native driver tracks its open tool sets by id, so a session that opens and closes several sets never compares `ToolSet` values.
+
 ## [v0.3.0] - 2026-09-26
 
 ### Added
