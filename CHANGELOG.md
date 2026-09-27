@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `ClaudeMCPConfig`, `CodexMCPArgs`, and `OpenCodeConfigContent` render injected MCP servers outside a launch, so a consumer that starts the harness itself (the trebi pane runtime) writes the same config as the CLI runtime.
+
 ## [v0.3.0] - 2026-09-26
 
 ### Added

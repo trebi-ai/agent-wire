@@ -79,6 +79,12 @@ func (rt *Runtime) applyMCPServers(req *StartRequest, l *launch) error {
 	return nil
 }
 
+// ClaudeMCPConfig renders the Claude/pi JSON shape for injected servers:
+// the value of the top-level "mcpServers" key.
+func ClaudeMCPConfig(servers []MCPServer) map[string]any {
+	return claudeMCPServers(servers)
+}
+
 // claudeMCPServers renders the Claude/pi JSON shape.
 func claudeMCPServers(servers []MCPServer) map[string]any {
 	out := make(map[string]any, len(servers))
@@ -107,6 +113,12 @@ func claudeMCPServers(servers []MCPServer) map[string]any {
 	return out
 }
 
+// CodexMCPArgs renders the `-c mcp_servers.<name>...` overrides for injected
+// servers.
+func CodexMCPArgs(servers []MCPServer) []string {
+	return codexMCPArgs(servers)
+}
+
 // codexMCPArgs renders `-c mcp_servers.<name>...` overrides.
 func codexMCPArgs(servers []MCPServer) []string {
 	var args []string
@@ -129,6 +141,12 @@ func codexMCPArgs(servers []MCPServer) []string {
 		}
 	}
 	return args
+}
+
+// OpenCodeConfigContent renders the OpenCode config fragment that carries the
+// injected servers: the value of OPENCODE_CONFIG_CONTENT.
+func OpenCodeConfigContent(servers []MCPServer) (string, error) {
+	return openCodeConfigContent(servers)
 }
 
 // openCodeConfigContent renders the OpenCode config fragment that carries the
