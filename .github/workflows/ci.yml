@@ -51,3 +51,29 @@ jobs:
           name: coverage-linux
           path: coverage.out
           if-no-files-found: error
+
+  # Tags each module whose code changed. See scripts/tag.sh for the rules.
+  tag:
+    needs: [test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, Linux, X64]
+    concurrency:
+      group: tag
+      cancel-in-progress: false
+    steps:
+      # The Actions token cannot tag a commit that changes .github/workflows.
+      # The trebi-releaser App token can.
+      - name: Mint a tag token
+        id: app
+        uses: actions/create-github-app-token@v3.2.0
+        with:
+          client-id: "Iv23liHamBzMshOMTWIG"
+          private-key: ${{ secrets.GH_APP_SECRET }}
+          owner: trebi-ai
+          repositories: agent-wire
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app.outputs.token }}
+      - name: Tag changed modules
+        run: scripts/tag.sh
