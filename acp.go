@@ -106,7 +106,71 @@ func (d acpDriver) start(ctx context.Context, req StartRequest, resume bool) (Se
 		}
 		_ = p.CloseStdin()
 	}
-	return s, nil
+	return &acpSession{Session: s, p: proto}, nil
+}
+
+// acpSession adds the model calls to the wire session.
+type acpSession struct {
+	*wire.Session
+	p *acpProtocol
+}
+
+// Models returns the models the session open offered, with Default on the
+// current model.
+func (s *acpSession) Models() []ModelInfo { return s.p.sessionModels() }
+
+// SetModel sends session/set_model. It returns ErrUnsupported when the agent
+// offered no model list.
+func (s *acpSession) SetModel(ctx context.Context, model string) error {
+	s.p.mu.Lock()
+	offered := len(s.p.models) > 0
+	s.p.mu.Unlock()
+	if !offered {
+		return fmt.Errorf("%w: %s offered no models", ErrUnsupported, s.p.kind)
+	}
+	return s.p.applyModel(ctx, model)
+}
+
+// Models implements ModelLister. It opens a session with no MCP servers,
+// reads the model list, and kills the child. It never calls authenticate, so
+// a probe cannot start a login flow.
+func (d acpDriver) Models(ctx context.Context, q ModelQuery) ([]ModelInfo, error) {
+	dir, done, err := probeDir(q)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	h := d.kind.harness()
+	req := probeRequest(h, q, dir)
+	l, err := d.rt.prepare(ctx, &req, false)
+	if err != nil {
+		return nil, err
+	}
+	defer l.cleanup()
+	args, err := d.acpArgs(ctx, l, req, false)
+	if err != nil {
+		return nil, err
+	}
+	proto := newACPProtocol(d.rt, d.kind, req, l, false)
+	a := probeAdapter{
+		run: func(ctx context.Context, w *wire.Writer) error {
+			proto.SetWriter(w)
+			if _, err := proto.initialize(ctx); err != nil {
+				return err
+			}
+			_, err := proto.newSession(ctx)
+			return err
+		},
+		parse: func(line []byte) { proto.client.Handle(line) },
+	}
+	if err := d.rt.runProbe(ctx, h, l.bin, args, dir, l.env, a); err != nil {
+		return nil, err
+	}
+	models := proto.sessionModels()
+	if len(models) == 0 {
+		return nil, fmt.Errorf("%w: %s offered no models", ErrUnsupported, d.kind)
+	}
+	return models, nil
 }
 
 // acpArgs adds the subcommand or flag that selects the ACP transport.
@@ -255,6 +319,11 @@ type acpProtocol struct {
 	sawResult   bool
 	approvals   map[string][]acpOption
 	authMethods []string
+
+	// models is the list the session open offered; currentModel is the model
+	// the agent reports as current.
+	models       []ModelInfo
+	currentModel string
 }
 
 func newACPProtocol(rt *Runtime, kind acpKind, req StartRequest, l *launch, fresh bool) *acpProtocol {
@@ -262,10 +331,7 @@ func newACPProtocol(rt *Runtime, kind acpKind, req StartRequest, l *launch, fres
 	if timeout <= 0 {
 		timeout = acpHandshakeTimeout
 	}
-	name := rt.opts.ClientName
-	if name == "" {
-		name = "agentwire"
-	}
+	name := rt.clientName()
 	p := &acpProtocol{
 		kind:             kind,
 		policy:           req.Permissions.Normalized(),
@@ -296,6 +362,30 @@ func (p *acpProtocol) SetWriter(w *wire.Writer) {
 
 // Handshake negotiates capabilities and opens or loads a session.
 func (p *acpProtocol) Handshake(ctx context.Context, _ *wire.Writer) ([]Event, error) {
+	if _, err := p.initialize(ctx); err != nil {
+		return nil, err
+	}
+	events := p.openOrLoad(ctx)
+	if len(events) == 0 {
+		return nil, errors.New(string(p.kind) + ": handshake produced no session")
+	}
+	if events[0].Type == EventError {
+		return nil, errors.New(events[0].Error)
+	}
+	if p.model != "" {
+		// The agent may take a model it did not list, so the call goes out
+		// even without an offered list.
+		if err := p.applyModel(ctx, p.model); err != nil {
+			events = append(events, Event{Type: EventStatus, Status: StatusRunning, Text: "model not applied: " + err.Error()})
+		} else {
+			events = append(events, Event{Type: EventStatus, Status: StatusRunning, Text: "model " + p.model})
+		}
+	}
+	return events, nil
+}
+
+// initialize negotiates capabilities and records the auth methods.
+func (p *acpProtocol) initialize(ctx context.Context) (json.RawMessage, error) {
 	caps := map[string]any{
 		"terminal": false,
 		"auth":     map[string]any{"terminal": false},
@@ -332,18 +422,7 @@ func (p *acpProtocol) Handshake(ctx context.Context, _ *wire.Writer) ([]Event, e
 	}
 	p.trustHTTPMCP = init.AgentCapabilities.MCPCapabilities.HTTP
 	p.mu.Unlock()
-
-	events := p.openOrLoad(ctx)
-	if len(events) == 0 {
-		return nil, errors.New(string(p.kind) + ": handshake produced no session")
-	}
-	if events[0].Type == EventError {
-		return nil, errors.New(events[0].Error)
-	}
-	if p.model != "" {
-		events = append(events, p.applyModel(ctx)...)
-	}
-	return events, nil
+	return raw, nil
 }
 
 // openOrLoad resumes a known session or opens a new one, authenticating once
@@ -405,6 +484,7 @@ func (p *acpProtocol) newSession(ctx context.Context) ([]Event, error) {
 	p.mu.Lock()
 	p.sessionID = id
 	p.mu.Unlock()
+	p.noteModels(raw)
 	return []Event{{Type: EventInit, SessionID: id}}, nil
 }
 
@@ -436,21 +516,69 @@ func (p *acpProtocol) sessionOpened(raw json.RawMessage, fallback string) []Even
 	p.mu.Lock()
 	p.sessionID = id
 	p.mu.Unlock()
+	p.noteModels(raw)
 	return []Event{{Type: EventInit, SessionID: id}}
 }
 
-// applyModel asks the agent to switch model, when it offered a model list.
-func (p *acpProtocol) applyModel(ctx context.Context) []Event {
+// noteModels records the models block of a session/new, session/load or
+// session/resume response. A response without the block keeps the old list.
+func (p *acpProtocol) noteModels(raw json.RawMessage) {
+	var res struct {
+		Models *struct {
+			CurrentModelID  string `json:"currentModelId"`
+			AvailableModels []struct {
+				ModelID     string `json:"modelId"`
+				Name        string `json:"name"`
+				Description string `json:"description"`
+			} `json:"availableModels"`
+		} `json:"models"`
+	}
+	if json.Unmarshal(raw, &res) != nil || res.Models == nil {
+		return
+	}
+	models := make([]ModelInfo, 0, len(res.Models.AvailableModels))
+	for _, m := range res.Models.AvailableModels {
+		if m.ModelID != "" {
+			models = append(models, ModelInfo{ID: m.ModelID, Name: m.Name, Description: m.Description})
+		}
+	}
+	p.mu.Lock()
+	p.models = models
+	p.currentModel = res.Models.CurrentModelID
+	p.mu.Unlock()
+}
+
+// sessionModels returns a copy of the offered models with Default on the
+// current model.
+func (p *acpProtocol) sessionModels() []ModelInfo {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.models) == 0 {
+		return nil
+	}
+	out := cloneModels(p.models)
+	for i := range out {
+		out[i].Default = out[i].ID == p.currentModel
+	}
+	return out
+}
+
+// applyModel sends session/set_model and records the model on success.
+func (p *acpProtocol) applyModel(ctx context.Context, model string) error {
 	p.mu.Lock()
 	sessionID := p.sessionID
 	p.mu.Unlock()
 	_, err := p.client.Call(ctx, "session/set_model", map[string]any{
-		"sessionId": sessionID, "modelId": p.model,
-	}, 10*time.Second)
+		"sessionId": sessionID, "modelId": model,
+	}, modelReplyWait)
 	if err != nil {
-		return []Event{{Type: EventStatus, Status: StatusRunning, Text: "model not applied: " + err.Error()}}
+		return fmt.Errorf("%s session/set_model: %w", p.kind, err)
 	}
-	return []Event{{Type: EventStatus, Status: StatusRunning, Text: "model " + p.model}}
+	p.mu.Lock()
+	p.model = model
+	p.currentModel = model
+	p.mu.Unlock()
+	return nil
 }
 
 // authenticate picks an auth method and reports the choice, so a consumer can
@@ -916,6 +1044,9 @@ func acpCost(v any) float64 {
 
 // ensure the driver and the protocol satisfy their interfaces.
 var (
-	_ Driver       = acpDriver{}
-	_ wire.Adapter = (*acpProtocol)(nil)
+	_ Driver        = acpDriver{}
+	_ wire.Adapter  = (*acpProtocol)(nil)
+	_ ModelLister   = acpDriver{}
+	_ ModelSetter   = (*acpSession)(nil)
+	_ SessionModels = (*acpSession)(nil)
 )

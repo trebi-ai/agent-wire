@@ -400,9 +400,10 @@ func TestClaudeFixtureSessionReplay(t *testing.T) {
 	if got := cpTestFramesOfType(t, stdin, "control_request"); len(got) != 1 {
 		t.Fatalf("handshake frames = %v", got)
 	}
+	// The session closes events just before Done.
 	select {
 	case <-s.Done():
-	default:
+	case <-time.After(2 * time.Second):
 		t.Fatal("Done() is not closed after the event channel closed")
 	}
 }

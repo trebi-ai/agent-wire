@@ -182,6 +182,26 @@ Protocol surfaces the library depends on:
 
 Cursor is started with `cursor-agent create-chat` before the ACP handshake. Copilot resume uses `--resume <id>` plus ACP resume. Both are verified in code. The spike confirms that `create-chat` returns a chat id, but that id does not load through `session/load` on cursor-agent 2026.09.18-9a7762b, so the fresh-id `session/load` path of the plan needs a live turn before a tag.
 
+## Models and mid-turn input
+
+Added in v0.4.0. "Live" means the live tier (`live/models_test.go`) passed on this machine on 2026-09-27. `TestLiveModels` lists the models, runs a turn, calls `SetModel`, and runs a second turn. `TestLiveSteer` sends `Steer` while a shell tool runs, and checks that one turn took both inputs.
+
+| Harness | List | Set | Steer | Tested version | Result |
+|---|---|---|---|---|---|
+| Claude | `initialize` control response, `response.models[]` (`value`, `displayName`, `description`). Falls back to the aliases `default`, `opus`, `sonnet`, `haiku` | `set_model` control request. A bad id answers `subtype: error` | a second `user` frame during the turn | 2.1.280 | live: list, set, steer. After `SetModel("haiku")`, the assistant frames of the next turn name the Haiku model. The steer joined the turn, and one `result` followed |
+| Codex | `model/list` over `nextCursor` pages. Hidden models are left out | `model` on the next `turn/start` | `turn/steer` with `expectedTurnId`. A refused steer returns `ErrUnsupported` and never interrupts | codex-cli 0.157.1 | live: list, set, steer. The vendor frames do not echo the model, so the live tier checks that the next turn succeeds |
+| OpenCode | `GET /config/providers`, default from `GET /config`. Without a server: `opencode models` | `model` on the next `prompt_async` | none. `Prompt` during a turn returns `ErrTurnActive` | 1.18.29 | live: list, set |
+| OpenCode 2 | `GET /api/model` (polled while the catalog loads), default from `GET /api/model/default`. Disabled models are left out | `POST /api/session/<id>/model` | none. `Prompt` during a turn returns `ErrTurnActive` | `v0.0.0-beta-19242` | live: list, set. A set to a model with an expired login failed the next turn with that login error, so the change took effect |
+| pi | `get_available_models` on `pi --mode rpc --no-session`, default from `get_state` | `set_model {provider, modelId}`. The id must be `provider/model` | `steer {message}`. Pi delivers it after the running tool calls | 0.84.1 | live: list, set. Steer is in code and in the unit tier, but `Features.Steer` is false: the only provider on this machine (xAI) has an expired login, so no live turn ran |
+| Cursor | `session/new` result, `models.availableModels` and `currentModelId` | `session/set_model` | none | 2026.09.26-dd393fe | live: list, set. The set also changes the default model of the Cursor account |
+| Copilot, Gemini | as Cursor, when the agent offers a model list | as Cursor. Without a list, `SetModel` returns `ErrUnsupported` | none | not installed | not run |
+
+Notes:
+
+- The model lister never calls ACP `authenticate`, so a list call cannot start a login flow.
+- OpenCode 2 has a `POST /api/session/<id>/inbox/<inboxID>/steer` route. The library does not use it yet.
+- Cursor model ids carry parameters, for example `grok-4.7[context=256k,reasoning_effort=high,fast=true]`. Pass the id as the list gives it.
+
 ## fake
 
 | Item | Value |

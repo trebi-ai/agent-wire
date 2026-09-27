@@ -40,6 +40,13 @@ type Features struct {
 	// FS reports that the harness can route file reads and writes to
 	// StartRequest.FS.
 	FS bool
+	// Models reports that Runtime.Models can list the harness models.
+	Models bool
+	// SetModel reports that a live session implements ModelSetter.
+	SetModel bool
+	// Steer reports that a live session implements Steerer and the vendor
+	// takes input during a running turn.
+	Steer bool
 }
 
 // Detection is the result of probing one harness on this machine.
@@ -81,19 +88,21 @@ var versionFloors = map[Harness]string{
 func featuresFor(h Harness) Features {
 	switch h {
 	case Claude:
-		return Features{MCPInject: MCPFlags, SkillsInject: SkillNative, Instructions: true, Attachments: true, Resume: true, Permissions: true}
+		return Features{MCPInject: MCPFlags, SkillsInject: SkillNative, Instructions: true, Attachments: true, Resume: true, Permissions: true, Models: true, SetModel: true, Steer: true}
 	case Codex:
-		return Features{MCPInject: MCPFlags, SkillsInject: SkillOverlay, Instructions: true, Attachments: true, Resume: true, Permissions: true}
+		return Features{MCPInject: MCPFlags, SkillsInject: SkillOverlay, Instructions: true, Attachments: true, Resume: true, Permissions: true, Models: true, SetModel: true, Steer: true}
 	case OpenCode, OpenCode2:
-		return Features{MCPInject: MCPFlags, SkillsInject: SkillOverlay, Instructions: true, Attachments: true, Resume: true, Permissions: true}
+		return Features{MCPInject: MCPFlags, SkillsInject: SkillOverlay, Instructions: true, Attachments: true, Resume: true, Permissions: true, Models: true, SetModel: true}
 	case Pi:
-		return Features{MCPInject: MCPFlags, SkillsInject: SkillNative, Instructions: true, Resume: true, Permissions: true}
+		// The session implements Steerer, but no live turn has proved it yet.
+		return Features{MCPInject: MCPFlags, SkillsInject: SkillNative, Instructions: true, Resume: true, Permissions: true, Models: true, SetModel: true}
 	case Copilot, Cursor, Gemini:
-		return Features{MCPInject: MCPSession, SkillsInject: SkillInstructions, Instructions: true, Attachments: true, Resume: true, Permissions: true, FS: true}
+		// Models and SetModel work only when the agent offers a model list.
+		return Features{MCPInject: MCPSession, SkillsInject: SkillInstructions, Instructions: true, Attachments: true, Resume: true, Permissions: true, FS: true, Models: true, SetModel: true}
 	case Native:
 		return Features{MCPInject: MCPSession, SkillsInject: SkillNative, Instructions: true, Attachments: true, Resume: true, Permissions: true, FS: true}
 	case Fake:
-		return Features{SkillsInject: SkillInstructions, Instructions: true, Resume: true, Permissions: true}
+		return Features{SkillsInject: SkillInstructions, Instructions: true, Resume: true, Permissions: true, Models: true, SetModel: true, Steer: true}
 	}
 	return Features{SkillsInject: SkillInstructions}
 }

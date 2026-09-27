@@ -86,6 +86,9 @@ type Options struct {
 	// AuthCacheTTL is how long a harness login probe answers from cache.
 	// Zero uses 5 min. A negative value disables the cache.
 	AuthCacheTTL time.Duration
+	// ModelCacheTTL is how long a model list answers from cache. Zero uses
+	// 10 min. A negative value disables the cache.
+	ModelCacheTTL time.Duration
 }
 
 // Session is one vendor conversation. The caller holds it for the life of the
@@ -222,10 +225,16 @@ type Runtime struct {
 
 	// auth caches login probes per harness and binary, with single-flight on
 	// a miss. A probe spawns a process; Detect must stay cheap.
-	authMu   sync.Mutex
-	auth     map[authKey]authEntry
-	authFlt  flight.Group[authKey, authEntry]
-	authTTL  time.Duration
+	authMu  sync.Mutex
+	auth    map[authKey]authEntry
+	authFlt flight.Group[authKey, authEntry]
+	authTTL time.Duration
+
+	// models caches model lists per harness, binary, version and home, with
+	// single-flight on a miss. A list can need a child process.
+	modelMu  sync.Mutex
+	models   map[modelKey]modelEntry
+	modelFlt flight.Group[modelKey, modelEntry]
 
 	mu      sync.RWMutex
 	drivers map[Harness]Driver
@@ -250,6 +259,7 @@ func New(opts Options) *Runtime {
 		maxFr:   opts.MaxFrameBytes,
 		vers:    newVersionCache(),
 		auth:    map[authKey]authEntry{},
+		models:  map[modelKey]modelEntry{},
 		authTTL: opts.AuthCacheTTL,
 	}
 	if rt.maxFr <= 0 {
@@ -383,3 +393,11 @@ var ErrResumeUnsupported = errors.New("agentwire: session resume not supported")
 
 // ErrUnsupported reports a capability the harness does not have.
 var ErrUnsupported = wire.ErrUnsupported
+
+// clientName is the product name the harness sees, "agentwire" by default.
+func (rt *Runtime) clientName() string {
+	if rt.opts.ClientName == "" {
+		return "agentwire"
+	}
+	return rt.opts.ClientName
+}

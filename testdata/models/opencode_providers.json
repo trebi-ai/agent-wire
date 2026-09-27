@@ -1,0 +1,1 @@
+{"providers":[{"id":"opencode-go","name":"OpenCode Go","models":{"deepseek-v4.1-flash":{"id":"deepseek-v4.1-flash","name":"DeepSeek V4.1 Flash","limit":{"context":1000000}},"kimi-k3":{"id":"kimi-k3","name":"Kimi K3","limit":{"context":256000}}}}],"default":{"opencode-go":"kimi-k3"}}

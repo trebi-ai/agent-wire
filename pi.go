@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/trebi-ai/agent-wire/internal/proc"
 	"github.com/trebi-ai/agent-wire/internal/wire"
@@ -56,7 +58,127 @@ func (d piDriver) start(ctx context.Context, req StartRequest, resume bool) (Ses
 		}
 		_ = p.CloseStdin()
 	}
-	return s, nil
+	return &piSession{Session: s, p: proto}, nil
+}
+
+// piSession adds the model and steer commands to the wire session.
+type piSession struct {
+	*wire.Session
+	p *piProtocol
+}
+
+// SetModel sends set_model. The id is "provider/model", as Models lists it.
+func (s *piSession) SetModel(ctx context.Context, model string) error {
+	provider, id, ok := strings.Cut(model, "/")
+	if !ok || provider == "" || id == "" {
+		return fmt.Errorf("pi: model %q is not provider/model", model)
+	}
+	_, err := s.p.request(ctx, map[string]any{"type": "set_model", "provider": provider, "modelId": id})
+	return err
+}
+
+// Steer sends the steer command. Pi delivers the message after the running
+// tool calls and before the next model call.
+func (s *piSession) Steer(ctx context.Context, pr Prompt) error {
+	if len(pr.Attachments) > 0 {
+		return fmt.Errorf("%w: pi does not accept steer attachments", ErrUnsupported)
+	}
+	if !s.p.active() {
+		return ErrNoActiveTurn
+	}
+	if _, err := s.p.request(ctx, map[string]any{"type": "steer", "message": pr.Text}); err != nil {
+		return fmt.Errorf("%w: pi steer: %v", ErrUnsupported, err)
+	}
+	return nil
+}
+
+// Models implements ModelLister with a short-lived `pi --mode rpc
+// --no-session` child: get_available_models, then get_state for the default.
+func (d piDriver) Models(ctx context.Context, q ModelQuery) ([]ModelInfo, error) {
+	dir, done, err := probeDir(q)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	req := probeRequest(Pi, q, dir)
+	l, err := d.rt.prepare(ctx, &req, false)
+	if err != nil {
+		return nil, err
+	}
+	defer l.cleanup()
+	args := append([]string{}, l.args...)
+	if !hasFlag(args, "--mode") && !hasFlag(args, "--rpc") {
+		args = append(args, "--mode", "rpc")
+	}
+	if !hasFlag(args, "--no-session") {
+		args = append(args, "--no-session")
+	}
+	proto := newPiProtocol(req.Permissions, "")
+	var models []ModelInfo
+	a := probeAdapter{
+		run: func(ctx context.Context, w *wire.Writer) error {
+			proto.SetWriter(w)
+			raw, err := proto.request(ctx, map[string]any{"type": "get_available_models"})
+			if err != nil {
+				return err
+			}
+			if models, err = piModels(raw); err != nil {
+				return err
+			}
+			if raw, err := proto.request(ctx, map[string]any{"type": "get_state"}); err == nil {
+				piMarkDefault(models, raw)
+			}
+			return nil
+		},
+		parse: func(line []byte) { proto.Parse(line) },
+	}
+	if err := d.rt.runProbe(ctx, Pi, l.bin, args, dir, l.env, a); err != nil {
+		return nil, err
+	}
+	return models, nil
+}
+
+// piModels maps the data of a get_available_models response.
+func piModels(raw json.RawMessage) ([]ModelInfo, error) {
+	var data struct {
+		Models []struct {
+			ID            string  `json:"id"`
+			Name          string  `json:"name"`
+			Provider      string  `json:"provider"`
+			ContextWindow float64 `json:"contextWindow"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return nil, fmt.Errorf("pi get_available_models: %w", err)
+	}
+	out := make([]ModelInfo, 0, len(data.Models))
+	for _, m := range data.Models {
+		if m.ID == "" || m.Provider == "" {
+			continue
+		}
+		out = append(out, ModelInfo{
+			ID: m.Provider + "/" + m.ID, Name: m.Name,
+			Description: contextText(int(m.ContextWindow)),
+		})
+	}
+	return out, nil
+}
+
+// piMarkDefault marks the current model of a get_state response.
+func piMarkDefault(models []ModelInfo, raw json.RawMessage) {
+	var data struct {
+		Model struct {
+			ID       string `json:"id"`
+			Provider string `json:"provider"`
+		} `json:"model"`
+	}
+	if json.Unmarshal(raw, &data) != nil || data.Model.ID == "" {
+		return
+	}
+	current := data.Model.Provider + "/" + data.Model.ID
+	for i := range models {
+		models[i].Default = models[i].ID == current
+	}
 }
 
 // piProtocol maps pi's RPC vocabulary. Captured against pi 0.84.1:
@@ -71,9 +193,20 @@ type piProtocol struct {
 	instructions string
 	firstPrompt  bool
 
-	sawEnd    bool
-	sawError  string
-	sawResult bool
+	sawEnd     bool
+	sawError   string
+	sawResult  bool
+	turnActive bool
+
+	// nextID and replies correlate command responses by id.
+	nextID  int
+	replies map[string]chan piReply
+}
+
+// piReply is one command response.
+type piReply struct {
+	data json.RawMessage
+	err  error
 }
 
 func newPiProtocol(policy PermissionPolicy, instructions string) *piProtocol {
@@ -81,6 +214,7 @@ func newPiProtocol(policy PermissionPolicy, instructions string) *piProtocol {
 		policy:       policy.Normalized(),
 		instructions: instructions,
 		firstPrompt:  strings.TrimSpace(instructions) != "",
+		replies:      map[string]chan piReply{},
 	}
 }
 
@@ -91,6 +225,77 @@ func (p *piProtocol) SetWriter(w *wire.Writer) {
 }
 
 func (p *piProtocol) Handshake(context.Context, *wire.Writer) ([]Event, error) { return nil, nil }
+
+// active reports whether a turn runs.
+func (p *piProtocol) active() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.turnActive
+}
+
+// request sends one command with an id and waits for its response. A
+// success:false response returns its error text.
+func (p *piProtocol) request(ctx context.Context, cmd map[string]any) (json.RawMessage, error) {
+	p.mu.Lock()
+	w := p.w
+	p.nextID++
+	id := "aw-" + strconv.Itoa(p.nextID)
+	ch := make(chan piReply, 1)
+	p.replies[id] = ch
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		delete(p.replies, id)
+		p.mu.Unlock()
+	}()
+	if w == nil {
+		return nil, fmt.Errorf("pi %s: no writer", cmd["type"])
+	}
+	cmd["id"] = id
+	frame, err := wire.JSONLine(cmd)
+	if err != nil {
+		return nil, err
+	}
+	if err := w.Write(frame); err != nil {
+		return nil, err
+	}
+	timer := time.NewTimer(modelReplyWait)
+	defer timer.Stop()
+	select {
+	case r := <-ch:
+		return r.data, r.err
+	case <-timer.C:
+		return nil, fmt.Errorf("pi %s: no response", cmd["type"])
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// parseResponse delivers a command response to its waiter.
+func (p *piProtocol) parseResponse(m map[string]any, line []byte) {
+	id := str(m["id"])
+	p.mu.Lock()
+	ch := p.replies[id]
+	p.mu.Unlock()
+	if ch == nil {
+		return
+	}
+	var res struct {
+		Command string          `json:"command"`
+		Success bool            `json:"success"`
+		Error   string          `json:"error"`
+		Data    json.RawMessage `json:"data"`
+	}
+	r := piReply{}
+	if err := json.Unmarshal(line, &res); err != nil {
+		r.err = err
+	} else if !res.Success {
+		r.err = fmt.Errorf("pi %s: %s", res.Command, firstNonEmpty(res.Error, "failed"))
+	} else {
+		r.data = res.Data
+	}
+	ch <- r
+}
 
 // EncodePrompt sends the prompt command. The instructions ride along on the
 // first turn when the binary has no flag for them.
@@ -103,6 +308,7 @@ func (p *piProtocol) EncodePrompt(pr Prompt) ([]byte, error) {
 	p.firstPrompt = false
 	p.sawEnd = false
 	p.sawResult = false
+	p.turnActive = true
 	p.mu.Unlock()
 	return wire.JSONLine(map[string]any{
 		"type": "prompt", "message": withInstructions(p.instructions, pr.Text, first),
@@ -125,6 +331,9 @@ func (p *piProtocol) Parse(line []byte) []Event {
 		return nil
 	}
 	switch str(m["type"]) {
+	case "response":
+		p.parseResponse(m, line)
+		return nil
 	case "ready", "session_start", "session_started":
 		return []Event{{Type: EventInit, SessionID: str(m["session_id"])}}
 	case "agent_start", "turn_start":
@@ -231,6 +440,7 @@ func (p *piProtocol) parseAgentEnd() []Event {
 	p.mu.Lock()
 	p.sawEnd = true
 	p.sawResult = true
+	p.turnActive = false
 	lastErr := p.sawError
 	p.mu.Unlock()
 	if lastErr != "" {
@@ -355,8 +565,11 @@ func (p *piProtocol) Exit(code int, err error, stderr string) []Event {
 	return []Event{{Type: EventError, Error: text, Code: c.Code, EndReason: string(c.Class)}}
 }
 
-// ensure the pi protocol satisfies the adapter interface.
+// ensure the pi types satisfy their interfaces.
 var (
 	_ wire.Adapter          = (*piProtocol)(nil)
 	_ wire.InterruptEncoder = (*piProtocol)(nil)
+	_ ModelLister           = piDriver{}
+	_ ModelSetter           = (*piSession)(nil)
+	_ Steerer               = (*piSession)(nil)
 )

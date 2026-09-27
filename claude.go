@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/trebi-ai/agent-wire/internal/proc"
 	"github.com/trebi-ai/agent-wire/internal/wire"
@@ -74,7 +75,87 @@ func (d claudeDriver) start(ctx context.Context, req StartRequest, resume bool) 
 			return nil, fmt.Errorf("claude: write prompt: %w", err)
 		}
 	}
-	return s, nil
+	return &claudeSession{Session: s, p: proto}, nil
+}
+
+// claudeSession adds the model and steer calls to the wire session.
+type claudeSession struct {
+	*wire.Session
+	p *claudeProtocol
+}
+
+// Models returns the models the initialize reply offered.
+func (s *claudeSession) Models() []ModelInfo { return s.p.sessionModels() }
+
+// SetModel sends set_model. Claude applies it from its next API call, so the
+// running turn goes on.
+func (s *claudeSession) SetModel(ctx context.Context, model string) error {
+	_, err := s.p.control(ctx, map[string]any{"subtype": "set_model", "model": model})
+	return err
+}
+
+// Steer writes a user frame during the running turn. The CLI adds it to the
+// turn at the next tool boundary, and the turn ends with one result.
+func (s *claudeSession) Steer(_ context.Context, pr Prompt) error {
+	if !s.p.active() {
+		return ErrNoActiveTurn
+	}
+	frame, err := claudeUserFrame(pr)
+	if err != nil {
+		return err
+	}
+	return s.WriteFrame(frame)
+}
+
+// claudeAliases are the model aliases the Claude Code docs list. The lister
+// returns them when the initialize reply has no model list.
+var claudeAliases = []ModelInfo{
+	{ID: "default", Name: "Default", Default: true},
+	{ID: "opus", Name: "Opus"},
+	{ID: "sonnet", Name: "Sonnet"},
+	{ID: "haiku", Name: "Haiku"},
+}
+
+// Models implements ModelLister. It starts claude with no MCP servers, reads
+// the initialize reply, and kills the child. It sends no prompt.
+func (d claudeDriver) Models(ctx context.Context, q ModelQuery) ([]ModelInfo, error) {
+	dir, done, err := probeDir(ModelQuery{})
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	req := probeRequest(Claude, q, dir)
+	l, err := d.rt.prepare(ctx, &req, false)
+	if err != nil {
+		return nil, err
+	}
+	defer l.cleanup()
+	if err := d.rt.checkClaudeVersion(ctx, l.bin); err != nil {
+		return nil, err
+	}
+	args := append([]string{"--output-format", "stream-json", "--verbose", "--input-format", "stream-json"}, l.args...)
+	args = append(args, "--strict-mcp-config")
+	proto := newClaudeProtocol(d.rt, PermissionPolicy{})
+	var models []ModelInfo
+	a := probeAdapter{
+		run: func(ctx context.Context, w *wire.Writer) error {
+			proto.SetWriter(w)
+			res, err := proto.control(ctx, map[string]any{"subtype": "initialize", "hooks": nil})
+			if err != nil {
+				return err
+			}
+			models = claudeModels(res)
+			return nil
+		},
+		parse: func(line []byte) { proto.Parse(line) },
+	}
+	if err := d.rt.runProbe(ctx, Claude, l.bin, args, dir, l.env, a); err != nil {
+		return nil, err
+	}
+	if len(models) == 0 {
+		return cloneModels(claudeAliases), nil
+	}
+	return models, nil
 }
 
 // checkClaudeVersion fails closed below the CLI floor: an old binary may not
@@ -112,6 +193,19 @@ type claudeProtocol struct {
 	// id, so the completion event would otherwise lose the tool name.
 	tools     map[string]string
 	sawResult bool
+	// turnActive is true from a prompt write until its result.
+	turnActive bool
+	// replies maps a control request id this side sent to its waiter.
+	replies map[string]chan claudeReply
+	// initID is the id of the initialize request; its reply carries models.
+	initID string
+	models []ModelInfo
+}
+
+// claudeReply is one control_response to a request this side sent.
+type claudeReply struct {
+	response map[string]any
+	err      error
 }
 
 func newClaudeProtocol(rt *Runtime, policy PermissionPolicy) *claudeProtocol {
@@ -120,7 +214,98 @@ func newClaudeProtocol(rt *Runtime, policy PermissionPolicy) *claudeProtocol {
 		policy:  policy.Normalized(),
 		pending: map[string]json.RawMessage{},
 		tools:   map[string]string{},
+		replies: map[string]chan claudeReply{},
 	}
+}
+
+func (p *claudeProtocol) active() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.turnActive
+}
+
+func (p *claudeProtocol) sessionModels() []ModelInfo {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return cloneModels(p.models)
+}
+
+// control sends one control request and waits for its control_response. An
+// error subtype becomes a Go error.
+func (p *claudeProtocol) control(ctx context.Context, request map[string]any) (map[string]any, error) {
+	id := p.rt.requestID()
+	ch := make(chan claudeReply, 1)
+	p.mu.Lock()
+	p.replies[id] = ch
+	w := p.w
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		delete(p.replies, id)
+		p.mu.Unlock()
+	}()
+	if w == nil {
+		return nil, fmt.Errorf("claude: not connected")
+	}
+	frame, err := wire.JSONLine(map[string]any{"type": "control_request", "request_id": id, "request": request})
+	if err != nil {
+		return nil, err
+	}
+	if err := w.Write(frame); err != nil {
+		return nil, err
+	}
+	timer := time.NewTimer(modelReplyWait)
+	defer timer.Stop()
+	select {
+	case r := <-ch:
+		return r.response, r.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-timer.C:
+		return nil, fmt.Errorf("claude %s: no reply in %s", str(request["subtype"]), modelReplyWait)
+	}
+}
+
+// parseControlResponse hands a reply to its waiter and reads the models of
+// the initialize reply. A reply for an unknown id is dropped.
+func (p *claudeProtocol) parseControlResponse(m map[string]any) {
+	resp, _ := m["response"].(map[string]any)
+	if resp == nil {
+		return
+	}
+	id := str(resp["request_id"])
+	r := claudeReply{}
+	if str(resp["subtype"]) == "error" {
+		r.err = fmt.Errorf("claude: %s", firstNonEmpty(str(resp["error"]), "control request failed"))
+	} else {
+		r.response, _ = resp["response"].(map[string]any)
+	}
+	p.mu.Lock()
+	if id != "" && id == p.initID && r.err == nil {
+		p.models = claudeModels(r.response)
+	}
+	ch := p.replies[id]
+	p.mu.Unlock()
+	if ch != nil {
+		ch <- r
+	}
+}
+
+// claudeModels maps the models of an initialize reply. The Agent SDK reads the
+// same fields in supportedModels(). The first entry is the default.
+func claudeModels(res map[string]any) []ModelInfo {
+	list, _ := res["models"].([]any)
+	out := make([]ModelInfo, 0, len(list))
+	for _, item := range list {
+		m, _ := item.(map[string]any)
+		if id := str(m["value"]); id != "" {
+			out = append(out, ModelInfo{ID: id, Name: str(m["displayName"]), Description: str(m["description"]), Default: id == "default"})
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func (p *claudeProtocol) SetWriter(w *wire.Writer) {
@@ -136,11 +321,16 @@ func (p *claudeProtocol) writer() *wire.Writer {
 }
 
 // Handshake sends the control initialize request without waiting for the
-// reply: the first prompt goes out immediately.
+// reply: the first prompt goes out immediately. Parse reads the models from
+// the reply when it arrives.
 func (p *claudeProtocol) Handshake(_ context.Context, w *wire.Writer) ([]Event, error) {
+	id := p.rt.requestID()
+	p.mu.Lock()
+	p.initID = id
+	p.mu.Unlock()
 	frame, err := wire.JSONLine(map[string]any{
 		"type":       "control_request",
-		"request_id": p.rt.requestID(),
+		"request_id": id,
 		"request":    map[string]any{"subtype": "initialize", "hooks": nil},
 	})
 	if err != nil {
@@ -149,9 +339,21 @@ func (p *claudeProtocol) Handshake(_ context.Context, w *wire.Writer) ([]Event, 
 	return nil, w.Write(frame)
 }
 
-// EncodePrompt ports the SDK user-message shape. Attachments become content
-// blocks, images first.
+// EncodePrompt ports the SDK user-message shape and opens a turn.
 func (p *claudeProtocol) EncodePrompt(pr Prompt) ([]byte, error) {
+	frame, err := claudeUserFrame(pr)
+	if err != nil {
+		return nil, err
+	}
+	p.mu.Lock()
+	p.turnActive = true
+	p.mu.Unlock()
+	return frame, nil
+}
+
+// claudeUserFrame renders one user message. Attachments become content
+// blocks, images first.
+func claudeUserFrame(pr Prompt) ([]byte, error) {
 	content, err := claudeContent(pr)
 	if err != nil {
 		return nil, err
@@ -261,6 +463,9 @@ func (p *claudeProtocol) Parse(line []byte) []Event {
 		return p.parseResult(m)
 	case "control_request":
 		return p.parseControlRequest(m)
+	case "control_response":
+		p.parseControlResponse(m)
+		return nil
 	case "rate_limit_event":
 		return p.parseRateLimit(m)
 	}
@@ -409,6 +614,7 @@ func (p *claudeProtocol) parseStreamEvent(m map[string]any) []Event {
 func (p *claudeProtocol) parseResult(m map[string]any) []Event {
 	p.mu.Lock()
 	p.sawResult = true
+	p.turnActive = false
 	p.mu.Unlock()
 	// Every tool still open when the turn ends is over; the vendor stream
 	// lost its completion (plan 2026-09-26 B). Close them as cancelled.
@@ -673,3 +879,11 @@ func flattenContent(v any) string {
 	}
 	return ""
 }
+
+// ensure the Claude session has the optional capabilities.
+var (
+	_ ModelLister   = claudeDriver{}
+	_ ModelSetter   = (*claudeSession)(nil)
+	_ SessionModels = (*claudeSession)(nil)
+	_ Steerer       = (*claudeSession)(nil)
+)

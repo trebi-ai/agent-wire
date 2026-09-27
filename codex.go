@@ -25,7 +25,7 @@ const (
 	// codexPromptAckWait bounds the turn/start ack wait: the turn is live even
 	// if the pin streams notifications without an RPC response.
 	codexPromptAckWait = 2 * time.Second
-	// codexSteerAckWait bounds the steer ack wait before falling back.
+	// codexSteerAckWait bounds the turn/steer ack wait.
 	codexSteerAckWait = 5 * time.Second
 )
 
@@ -76,7 +76,114 @@ func (d codexDriver) start(ctx context.Context, req StartRequest, resume bool) (
 		}
 		_ = p.CloseStdin()
 	}
-	return s, nil
+	return &codexSession{Session: s, p: proto}, nil
+}
+
+// codexSession adds the model and steer calls to the wire session.
+type codexSession struct {
+	*wire.Session
+	p *codexProtocol
+}
+
+// SetModel changes the model of the next turn/start. The running turn keeps
+// its model.
+func (s *codexSession) SetModel(_ context.Context, model string) error {
+	s.p.mu.Lock()
+	s.p.model = model
+	s.p.mu.Unlock()
+	return nil
+}
+
+// Steer sends turn/steer for the running turn.
+func (s *codexSession) Steer(ctx context.Context, pr Prompt) error { return s.p.Steer(ctx, pr) }
+
+// Models implements ModelLister. It starts `codex app-server`, reads every
+// page of model/list, and kills the child. Hidden models are left out.
+func (d codexDriver) Models(ctx context.Context, q ModelQuery) ([]ModelInfo, error) {
+	dir, done, err := probeDir(q)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	req := probeRequest(Codex, q, dir)
+	l, err := d.rt.prepare(ctx, &req, false)
+	if err != nil {
+		return nil, err
+	}
+	defer l.cleanup()
+	client := jsonrpc.New(nil, modelProbeTimeout)
+	var models []ModelInfo
+	a := probeAdapter{
+		run: func(ctx context.Context, w *wire.Writer) error {
+			client.SetWrite(w.Write)
+			if _, err := client.Call(ctx, "initialize", map[string]any{
+				"clientInfo": map[string]any{"name": d.rt.clientName(), "title": d.rt.clientName(), "version": d.rt.opts.ClientVersion},
+			}, modelProbeTimeout); err != nil {
+				return err
+			}
+			if err := client.Notify("initialized", map[string]any{}); err != nil {
+				return err
+			}
+			cursor := ""
+			for range 50 {
+				params := map[string]any{}
+				if cursor != "" {
+					params["cursor"] = cursor
+				}
+				raw, err := client.Call(ctx, "model/list", params, modelProbeTimeout)
+				if err != nil {
+					return err
+				}
+				page, next, err := codexModelPage(raw)
+				if err != nil {
+					return err
+				}
+				models = append(models, page...)
+				if next == "" {
+					return nil
+				}
+				cursor = next
+			}
+			return nil
+		},
+		parse: func(line []byte) { client.Handle(line) },
+	}
+	args := append(append([]string{}, l.args...), "app-server")
+	if err := d.rt.runProbe(ctx, Codex, l.bin, args, dir, l.env, a); err != nil {
+		return nil, err
+	}
+	return models, nil
+}
+
+// codexModelPage maps one model/list response and returns the next cursor.
+func codexModelPage(raw json.RawMessage) ([]ModelInfo, string, error) {
+	var res struct {
+		Data []struct {
+			ID          string `json:"id"`
+			Model       string `json:"model"`
+			DisplayName string `json:"displayName"`
+			Description string `json:"description"`
+			Hidden      bool   `json:"hidden"`
+			IsDefault   bool   `json:"isDefault"`
+		} `json:"data"`
+		NextCursor *string `json:"nextCursor"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return nil, "", fmt.Errorf("codex model/list: decode response: %w", err)
+	}
+	out := make([]ModelInfo, 0, len(res.Data))
+	for _, m := range res.Data {
+		id := firstNonEmpty(m.Model, m.ID)
+		if id == "" || m.Hidden {
+			continue
+		}
+		out = append(out, ModelInfo{ID: id, Name: m.DisplayName, Description: m.Description, Default: m.IsDefault})
+	}
+	next := ""
+	if res.NextCursor != nil {
+		next = *res.NextCursor
+	}
+	return out, next, nil
 }
 
 // codexProtocol ports the app-server JSON-RPC shapes. Requests it sends get
@@ -165,10 +272,7 @@ func (p *codexProtocol) Cleanup() {
 
 // Handshake runs initialize, initialized, then thread/start or thread/resume.
 func (p *codexProtocol) Handshake(ctx context.Context, _ *wire.Writer) ([]Event, error) {
-	clientName := p.rt.opts.ClientName
-	if clientName == "" {
-		clientName = "agentwire"
-	}
+	clientName := p.rt.clientName()
 	_, err := p.client.Call(ctx, "initialize", map[string]any{
 		"clientInfo": map[string]any{
 			"name": clientName, "title": clientName, "version": p.rt.opts.ClientVersion,
@@ -247,13 +351,8 @@ func (p *codexProtocol) PromptSession(ctx context.Context, pr Prompt) error {
 		return err
 	}
 	if active {
-		params := map[string]any{"threadId": threadID, "input": input}
-		if turnID != "" {
-			params["expectedTurnId"] = turnID
-		}
-		if _, err := p.client.Call(ctx, "turn/steer", params, codexSteerAckWait); err == nil {
-			return nil
-		} else if ctx.Err() != nil {
+		err := p.steer(ctx, threadID, turnID, input)
+		if err == nil || ctx.Err() != nil {
 			return err
 		}
 		if err := p.interruptTurn(); err != nil {
@@ -264,14 +363,45 @@ func (p *codexProtocol) PromptSession(ctx context.Context, pr Prompt) error {
 	return p.startTurn(ctx, threadID, input)
 }
 
+// Steer adds input to the running turn with turn/steer. It never interrupts.
+func (p *codexProtocol) Steer(ctx context.Context, pr Prompt) error {
+	p.mu.Lock()
+	threadID, turnID, active := p.threadID, p.turnID, p.turnActive
+	p.mu.Unlock()
+	if threadID == "" {
+		return errors.New("codex: thread not started")
+	}
+	if !active {
+		return ErrNoActiveTurn
+	}
+	input, err := p.inputItems(pr)
+	if err != nil {
+		return err
+	}
+	return p.steer(ctx, threadID, turnID, input)
+}
+
+// steer sends turn/steer. A refused or unanswered steer wraps ErrUnsupported.
+func (p *codexProtocol) steer(ctx context.Context, threadID, turnID string, input []map[string]any) error {
+	params := map[string]any{"threadId": threadID, "input": input}
+	if turnID != "" {
+		params["expectedTurnId"] = turnID
+	}
+	_, err := p.client.Call(ctx, "turn/steer", params, codexSteerAckWait)
+	if err == nil || ctx.Err() != nil {
+		return err
+	}
+	return fmt.Errorf("%w: codex turn/steer: %v", ErrUnsupported, err)
+}
+
 // startTurn sends turn/start. The turn is live even when the pin streams
 // notifications without an RPC ack, so an ack timeout is not an error.
 func (p *codexProtocol) startTurn(ctx context.Context, threadID string, input []map[string]any) error {
 	params := map[string]any{"threadId": threadID, "input": input}
+	p.mu.Lock()
 	if p.model != "" {
 		params["model"] = p.model
 	}
-	p.mu.Lock()
 	effort := p.effort
 	sendEffort := p.sendEffort
 	p.mu.Unlock()
@@ -785,3 +915,10 @@ func codexExitCode(v any) *int {
 	n := int(num(v))
 	return &n
 }
+
+// ensure the Codex session has the optional capabilities.
+var (
+	_ ModelLister = codexDriver{}
+	_ ModelSetter = (*codexSession)(nil)
+	_ Steerer     = (*codexSession)(nil)
+)

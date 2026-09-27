@@ -1,0 +1,1 @@
+{"type":"response","command":"get_available_models","success":true,"data":{"models":[{"id":"grok-4.5","name":"Grok 4.5","provider":"xai","contextWindow":256000,"maxTokens":32000},{"id":"glm-5.3","name":"GLM-5.3","provider":"zai","contextWindow":200000,"maxTokens":32000}]}}

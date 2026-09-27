@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/trebi-ai/agent-wire/internal/proc"
 	"github.com/trebi-ai/agent-wire/internal/wire"
@@ -14,7 +15,21 @@ import (
 // FakeScriptEnv overrides the fake driver script from the environment.
 const FakeScriptEnv = "AGENTWIRE_FAKE_SCRIPT"
 
+// FakeModelsEnv holds the fake model list as a JSON array of ModelInfo, used
+// when FakeDriver.ModelList is empty.
+const FakeModelsEnv = "AGENTWIRE_FAKE_MODELS"
+
 // DefaultFakeScript emits a tiny assistant turn and a success result.
+//
+// The session writes one NDJSON line to the script's stdin per call:
+// {"type":"user","text":…} for Prompt, {"type":"steer","text":…} for Steer
+// while a turn runs, and {"type":"set_model","model":…} for SetModel. This
+// script echoes a steer line that arrives during its turn:
+//
+//	read -r line
+//	echo '{"type":"assistant","text":"working"}'
+//	if read -r next; then echo '{"type":"user","text":"got: '"$next"'"}'; fi
+//	echo '{"type":"result","subtype":"success"}'
 const DefaultFakeScript = `read -r line || true; echo '{"type":"assistant","text":"working"}'; echo '{"type":"result","subtype":"success","text":"done"}'`
 
 // FakeDriver is the scripted driver for tests: it spawns a shell that emits the
@@ -29,6 +44,9 @@ type FakeDriver struct {
 	Script string
 	// Dir overrides the working directory.
 	Dir string
+	// ModelList is the list Runtime.Models returns. Empty reads
+	// FakeModelsEnv.
+	ModelList []ModelInfo
 }
 
 // Name implements Driver.
@@ -42,6 +60,22 @@ func (f FakeDriver) Start(ctx context.Context, req StartRequest) (Session, error
 // Resume implements Driver.
 func (f FakeDriver) Resume(ctx context.Context, req StartRequest) (Session, error) {
 	return f.start(ctx, req)
+}
+
+// Models implements ModelLister: ModelList, else the list in FakeModelsEnv.
+func (f FakeDriver) Models(context.Context, ModelQuery) ([]ModelInfo, error) {
+	if len(f.ModelList) > 0 {
+		return cloneModels(f.ModelList), nil
+	}
+	raw := os.Getenv(FakeModelsEnv)
+	if raw == "" {
+		return nil, nil
+	}
+	var models []ModelInfo
+	if err := json.Unmarshal([]byte(raw), &models); err != nil {
+		return nil, fmt.Errorf("fake: %s: %w", FakeModelsEnv, err)
+	}
+	return models, nil
 }
 
 func (f FakeDriver) start(ctx context.Context, req StartRequest) (Session, error) {
@@ -62,7 +96,8 @@ func (f FakeDriver) start(ctx context.Context, req StartRequest) (Session, error
 	if err != nil {
 		return nil, err
 	}
-	s, err := wire.Start(ctx, string(Fake), p, fakeProtocol{}, wire.Config{})
+	proto := &fakeProtocol{}
+	s, err := wire.Start(ctx, string(Fake), p, proto, wire.Config{})
 	if err != nil {
 		return nil, err
 	}
@@ -76,19 +111,58 @@ func (f FakeDriver) start(ctx context.Context, req StartRequest) (Session, error
 		}
 		_ = p.CloseStdin()
 	}
-	return s, nil
+	return &fakeSession{Session: s, p: proto}, nil
+}
+
+// fakeSession adds the model and steer calls to the wire session.
+type fakeSession struct {
+	*wire.Session
+	p *fakeProtocol
+}
+
+// SetModel writes a set_model line to the script.
+func (s *fakeSession) SetModel(_ context.Context, model string) error {
+	frame, err := json.Marshal(map[string]any{"type": "set_model", "model": model})
+	if err != nil {
+		return err
+	}
+	return s.WriteFrame(frame)
+}
+
+// Steer writes a steer line to the script while a turn runs.
+func (s *fakeSession) Steer(_ context.Context, pr Prompt) error {
+	if !s.p.active() {
+		return ErrNoActiveTurn
+	}
+	frame, err := json.Marshal(map[string]any{"type": "steer", "text": pr.Text})
+	if err != nil {
+		return err
+	}
+	return s.WriteFrame(frame)
 }
 
 // fakeProtocol parses the fake NDJSON vocabulary.
-type fakeProtocol struct{}
-
-func (fakeProtocol) Handshake(context.Context, *wire.Writer) ([]Event, error) { return nil, nil }
-
-func (fakeProtocol) EncodePrompt(p Prompt) ([]byte, error) {
-	return json.Marshal(map[string]any{"type": "user", "text": p.Text})
+type fakeProtocol struct {
+	mu         sync.Mutex
+	turnActive bool
 }
 
-func (fakeProtocol) Parse(line []byte) []Event {
+func (p *fakeProtocol) active() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.turnActive
+}
+
+func (*fakeProtocol) Handshake(context.Context, *wire.Writer) ([]Event, error) { return nil, nil }
+
+func (p *fakeProtocol) EncodePrompt(pr Prompt) ([]byte, error) {
+	p.mu.Lock()
+	p.turnActive = true
+	p.mu.Unlock()
+	return json.Marshal(map[string]any{"type": "user", "text": pr.Text})
+}
+
+func (p *fakeProtocol) Parse(line []byte) []Event {
 	var m map[string]any
 	if json.Unmarshal(line, &m) != nil {
 		return nil
@@ -112,6 +186,9 @@ func (fakeProtocol) Parse(line []byte) []Event {
 			ID: text("id"), Tool: text("tool"), Question: text("question"),
 		}}}
 	case "result":
+		p.mu.Lock()
+		p.turnActive = false
+		p.mu.Unlock()
 		isErr, _ := m["is_error"].(bool)
 		return []Event{{Type: EventResult, Result: &Result{
 			Subtype: orDefault(text("subtype"), "success"),
@@ -126,7 +203,7 @@ func (fakeProtocol) Parse(line []byte) []Event {
 	return nil
 }
 
-func (fakeProtocol) EncodeDecision(id string, d Decision) ([]byte, error) {
+func (*fakeProtocol) EncodeDecision(id string, d Decision) ([]byte, error) {
 	behavior := "deny"
 	if d.Allow {
 		behavior = "allow"
@@ -134,7 +211,7 @@ func (fakeProtocol) EncodeDecision(id string, d Decision) ([]byte, error) {
 	return json.Marshal(map[string]any{"type": "decision", "id": id, "behavior": behavior, "message": d.Message})
 }
 
-func (fakeProtocol) Exit(code int, err error, stderr string) []Event {
+func (*fakeProtocol) Exit(code int, err error, stderr string) []Event {
 	if code == 0 && err == nil {
 		return nil
 	}
@@ -147,3 +224,10 @@ func (fakeProtocol) Exit(code int, err error, stderr string) []Event {
 	}
 	return []Event{{Type: EventError, Error: msg, Code: "process_exited", ExitCode: &code}}
 }
+
+// ensure the fake session has every optional capability.
+var (
+	_ ModelLister = FakeDriver{}
+	_ ModelSetter = (*fakeSession)(nil)
+	_ Steerer     = (*fakeSession)(nil)
+)

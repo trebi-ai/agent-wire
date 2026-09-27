@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -144,6 +145,7 @@ func (d openCode2Driver) start(ctx context.Context, req StartRequest, resume boo
 	s := &openCode2Session{
 		openCodeBase: newOpenCodeBase(d.rt, srv, sessionID, dir, openCode2{}),
 		instructions: l.instructions,
+		variant:      req.Effort,
 		policy:       req.Permissions.Normalized(),
 		text:         map[string]int{},
 		tools:        map[string]string{},
@@ -175,6 +177,8 @@ type openCode2Session struct {
 
 	instructions string
 	policy       PermissionPolicy
+	// variant is the effort SetModel keeps on a model change.
+	variant string
 
 	// text records how much of each (assistant message, block) pair the caller
 	// has already received, so the ended event can be reconciled against it.
@@ -185,14 +189,9 @@ type openCode2Session struct {
 }
 
 // Prompt starts a turn without waiting: the prompt route answers with the
-// queued message and the turn arrives on the event stream.
+// queued message and the turn arrives on the event stream. It returns
+// ErrTurnActive while a turn runs.
 func (s *openCode2Session) Prompt(ctx context.Context, p Prompt) error {
-	s.queueMu.Lock()
-	s.sawResult = false
-	s.lastError = ""
-	s.text = map[string]int{}
-	s.tools = map[string]string{}
-	s.queueMu.Unlock()
 	body := map[string]any{
 		"text":     p.Text,
 		"location": map[string]any{"directory": s.dir},
@@ -204,7 +203,24 @@ func (s *openCode2Session) Prompt(ctx context.Context, p Prompt) error {
 	if len(files) > 0 {
 		body["files"] = files
 	}
-	return s.srv.call(ctx, "POST", "/session/"+s.id+"/prompt", s.dir, body, nil)
+	if err := s.beginTurn(); err != nil {
+		return err
+	}
+	s.queueMu.Lock()
+	s.text = map[string]int{}
+	s.tools = map[string]string{}
+	s.queueMu.Unlock()
+	if err := s.srv.call(ctx, "POST", "/session/"+s.id+"/prompt", s.dir, body, nil); err != nil {
+		s.endTurn()
+		return err
+	}
+	return nil
+}
+
+// SetModel pins a new model on the session with the current effort. V2
+// applies it at once; the running turn goes on.
+func (s *openCode2Session) SetModel(ctx context.Context, model string) error {
+	return s.setModel(ctx, model, s.variant)
 }
 
 // promptFiles renders the attachments of one prompt as V2 file inputs.
@@ -283,19 +299,27 @@ func openCode2DefaultModel() string {
 	var cfg struct {
 		Model json.RawMessage `json:"model"`
 	}
-	if json.Unmarshal(data, &cfg) != nil || len(cfg.Model) == 0 {
+	if json.Unmarshal(data, &cfg) != nil {
 		return ""
 	}
-	// 1.x stores a "provider/model" string, 2.x stores {providerID, model}.
+	return openCodeConfigModel(cfg.Model)
+}
+
+// openCodeConfigModel reads the model key of an OpenCode config. 1.x stores a
+// "provider/model" string, 2.x stores {providerID, model}.
+func openCodeConfigModel(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
 	var pinned string
-	if json.Unmarshal(cfg.Model, &pinned) == nil {
+	if json.Unmarshal(raw, &pinned) == nil {
 		return strings.TrimSpace(pinned)
 	}
 	var ref struct {
 		ProviderID string `json:"providerID"`
 		Model      string `json:"model"`
 	}
-	if json.Unmarshal(cfg.Model, &ref) != nil || ref.Model == "" {
+	if json.Unmarshal(raw, &ref) != nil || ref.Model == "" {
 		return ""
 	}
 	if ref.ProviderID == "" {
@@ -394,6 +418,7 @@ func (s *openCode2Session) parse(typ string, data map[string]any) []Event {
 	case "session.execution.succeeded":
 		s.queueMu.Lock()
 		s.sawResult = true
+		s.busy = false
 		lastErr := s.lastError
 		s.queueMu.Unlock()
 		if lastErr != "" {
@@ -413,6 +438,9 @@ func (s *openCode2Session) parse(typ string, data map[string]any) []Event {
 		s.queueMu.Lock()
 		s.sawResult = true
 		s.lastError = text
+		if typ == "session.execution.failed" {
+			s.busy = false
+		}
 		s.queueMu.Unlock()
 		if typ == "session.execution.failed" {
 			return []Event{
@@ -622,8 +650,83 @@ func openCode2Usage(data map[string]any) *Usage {
 	return u
 }
 
+// Models implements ModelLister.
+func (d openCode2Driver) Models(ctx context.Context, q ModelQuery) ([]ModelInfo, error) {
+	return d.rt.openCodeModels(ctx, openCode2{}, q)
+}
+
+// openCode2ModelWait bounds the wait for the V2 model catalog. A fresh server
+// loads it after the health check passes, and answers an empty list first.
+const openCode2ModelWait = 10 * time.Second
+
+// models reads the V2 model list (GET /api/model) and its default (GET
+// /api/model/default). Disabled models are left out.
+func (openCode2) models(ctx context.Context, srv *openCodeServer, dir string) ([]ModelInfo, error) {
+	query := ""
+	if dir != "" {
+		query = "?" + url.Values{"location[directory]": {dir}}.Encode()
+	}
+	type v2Model struct {
+		ID         string `json:"id"`
+		ModelID    string `json:"modelID"`
+		ProviderID string `json:"providerID"`
+		Name       string `json:"name"`
+		Enabled    *bool  `json:"enabled"`
+		Limit      struct {
+			Context int `json:"context"`
+		} `json:"limit"`
+	}
+	var list []v2Model
+	deadline := time.Now().Add(openCode2ModelWait)
+	for {
+		if err := srv.call(ctx, "GET", "/model"+query, dir, nil, &list); err != nil {
+			return nil, err
+		}
+		if len(list) > 0 || time.Now().After(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	ref := func(m v2Model) string {
+		id := firstNonEmpty(m.ModelID, m.ID)
+		if m.ProviderID == "" {
+			return id
+		}
+		return m.ProviderID + "/" + id
+	}
+	var def v2Model
+	_ = srv.call(ctx, "GET", "/model/default"+query, dir, nil, &def)
+	defID := ""
+	if firstNonEmpty(def.ModelID, def.ID) != "" {
+		defID = ref(def)
+	}
+	out := make([]ModelInfo, 0, len(list))
+	for _, m := range list {
+		if m.Enabled != nil && !*m.Enabled {
+			continue
+		}
+		id := ref(m)
+		out = append(out, ModelInfo{
+			ID: id, Name: firstNonEmpty(m.Name, m.ModelID, m.ID),
+			Description: contextText(m.Limit.Context), Default: id == defID,
+		})
+	}
+	sortModels(out)
+	return out, nil
+}
+
 // ensure the openCode2Session satisfies the Session interface.
 var _ Session = (*openCode2Session)(nil)
+
+// ensure the OpenCode 2 session has the optional capabilities.
+var (
+	_ ModelLister = openCode2Driver{}
+	_ ModelSetter = (*openCode2Session)(nil)
+)
 
 // ensure the driver satisfies the Driver interface.
 var _ Driver = openCode2Driver{}

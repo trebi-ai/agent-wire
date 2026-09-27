@@ -134,6 +134,7 @@ func TestDetectFeaturesTable(t *testing.T) {
 			want: Features{
 				MCPInject: MCPFlags, SkillsInject: SkillNative, Instructions: true,
 				Attachments: true, Resume: true, Permissions: true,
+				Models: true, SetModel: true, Steer: true,
 			},
 		},
 		{
@@ -141,6 +142,7 @@ func TestDetectFeaturesTable(t *testing.T) {
 			want: Features{
 				MCPInject: MCPFlags, SkillsInject: SkillOverlay, Instructions: true,
 				Attachments: true, Resume: true, Permissions: true,
+				Models: true, SetModel: true, Steer: true,
 			},
 		},
 		{
@@ -148,6 +150,7 @@ func TestDetectFeaturesTable(t *testing.T) {
 			want: Features{
 				MCPInject: MCPFlags, SkillsInject: SkillOverlay, Instructions: true,
 				Attachments: true, Resume: true, Permissions: true,
+				Models: true, SetModel: true,
 			},
 		},
 		{
@@ -155,6 +158,7 @@ func TestDetectFeaturesTable(t *testing.T) {
 			want: Features{
 				MCPInject: MCPFlags, SkillsInject: SkillOverlay, Instructions: true,
 				Attachments: true, Resume: true, Permissions: true,
+				Models: true, SetModel: true,
 			},
 		},
 		{
@@ -162,6 +166,7 @@ func TestDetectFeaturesTable(t *testing.T) {
 			want: Features{
 				MCPInject: MCPFlags, SkillsInject: SkillNative, Instructions: true,
 				Attachments: false, Resume: true, Permissions: true,
+				Models: true, SetModel: true,
 			},
 		},
 		{
@@ -169,6 +174,7 @@ func TestDetectFeaturesTable(t *testing.T) {
 			want: Features{
 				MCPInject: MCPSession, SkillsInject: SkillInstructions, Instructions: true,
 				Attachments: true, Resume: true, Permissions: true, FS: true,
+				Models: true, SetModel: true,
 			},
 		},
 		{
@@ -176,6 +182,7 @@ func TestDetectFeaturesTable(t *testing.T) {
 			want: Features{
 				MCPInject: MCPSession, SkillsInject: SkillInstructions, Instructions: true,
 				Attachments: true, Resume: true, Permissions: true, FS: true,
+				Models: true, SetModel: true,
 			},
 		},
 		{
@@ -183,6 +190,7 @@ func TestDetectFeaturesTable(t *testing.T) {
 			want: Features{
 				MCPInject: MCPSession, SkillsInject: SkillInstructions, Instructions: true,
 				Attachments: true, Resume: true, Permissions: true, FS: true,
+				Models: true, SetModel: true,
 			},
 		},
 		{
@@ -192,6 +200,7 @@ func TestDetectFeaturesTable(t *testing.T) {
 			want: Features{
 				SkillsInject: SkillInstructions, Instructions: true,
 				Attachments: false, Resume: true, Permissions: true,
+				Models: true, SetModel: true, Steer: true,
 			},
 		},
 	}

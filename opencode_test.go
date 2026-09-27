@@ -3,6 +3,7 @@ package agentwire
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -364,9 +365,16 @@ func TestOpenCodePromptBody(t *testing.T) {
 	sess := oc.session("s1", t.TempDir(), "be brief", "anthropic/claude-sonnet-4", "high", PermissionPolicy{})
 	oc.sse.wait(t)
 
+	events := coaTestWatch(t, sess.Events())
 	if err := sess.Prompt(context.Background(), Prompt{Text: "hello"}); err != nil {
 		t.Fatalf("first prompt: %v", err)
 	}
+	// A second prompt during the turn is refused, not queued.
+	if err := sess.Prompt(context.Background(), Prompt{Text: "early"}); !errors.Is(err, ErrTurnActive) {
+		t.Fatalf("prompt during a turn: %v, want ErrTurnActive", err)
+	}
+	oc.sse.push(t, "session.idle", map[string]any{"sessionID": "s1"})
+	events.next(EventResult)
 	if err := sess.Prompt(context.Background(), Prompt{Text: "again"}); err != nil {
 		t.Fatalf("second prompt: %v", err)
 	}

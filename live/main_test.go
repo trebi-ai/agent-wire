@@ -300,6 +300,8 @@ type liveTestObs struct {
 	result    *agentwire.Event
 	exit      *agentwire.Event
 	closed    bool
+	// models lists the model names the usage reports carried.
+	models []string
 }
 
 // note folds one event into the observation.
@@ -316,9 +318,16 @@ func (o *liveTestObs) note(ev *agentwire.Event) {
 		}
 	case agentwire.EventError:
 		o.errors = append(o.errors, ev.Error)
+	case agentwire.EventUsage:
+		if ev.Usage != nil && ev.Usage.Model != "" {
+			o.models = append(o.models, ev.Usage.Model)
+		}
 	case agentwire.EventResult:
 		cp := *ev
 		o.result = &cp
+		if ev.Result != nil && ev.Result.Usage.Model != "" {
+			o.models = append(o.models, ev.Result.Usage.Model)
+		}
 	case agentwire.EventExit:
 		cp := *ev
 		o.exit = &cp

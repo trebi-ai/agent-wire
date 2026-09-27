@@ -5,9 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/trebi-ai/agent-wire/internal/proc"
 )
 
 // openCodeWire is one version of the OpenCode HTTP surface. The session
@@ -32,6 +36,8 @@ type openCodeWire interface {
 	decode(body []byte, out any) error
 	// errorText reads the message out of a non-2xx response body.
 	errorText(body []byte, status int) string
+	// models lists the models the server offers for a directory.
+	models(ctx context.Context, srv *openCodeServer, dir string) ([]ModelInfo, error)
 }
 
 // openCodeRoute is one session attached to a shared server.
@@ -66,9 +72,11 @@ type openCodeBase struct {
 	finishOnce  sync.Once
 	releaseOnce sync.Once
 	sawResult   bool
-	live        bool
-	lastError   string
-	onClose     []func()
+	// busy is true from a prompt until the turn ends on the event stream.
+	busy      bool
+	live      bool
+	lastError string
+	onClose   []func()
 }
 
 func newOpenCodeBase(rt *Runtime, srv *openCodeServer, id, dir string, w openCodeWire) *openCodeBase {
@@ -235,6 +243,27 @@ func (b *openCodeBase) releaseServer() {
 	})
 }
 
+// beginTurn opens a turn. It returns ErrTurnActive while a turn runs, so a
+// second prompt never resets the state of the running turn.
+func (b *openCodeBase) beginTurn() error {
+	b.queueMu.Lock()
+	defer b.queueMu.Unlock()
+	if b.busy {
+		return ErrTurnActive
+	}
+	b.busy = true
+	b.sawResult = false
+	b.lastError = ""
+	return nil
+}
+
+// endTurn closes the turn, on the terminal event or on a failed prompt call.
+func (b *openCodeBase) endTurn() {
+	b.queueMu.Lock()
+	b.busy = false
+	b.queueMu.Unlock()
+}
+
 // serverGone ends the session because its server disappeared.
 func (b *openCodeBase) serverGone(reason string) {
 	b.queueMu.Lock()
@@ -392,25 +421,24 @@ type openCodeSession struct {
 
 // Prompt starts a turn without waiting: prompt_async answers 204 and the turn
 // arrives on the event stream.
+// It returns ErrTurnActive while a turn runs.
 func (s *openCodeSession) Prompt(ctx context.Context, p Prompt) error {
-	s.queueMu.Lock()
-	s.sawResult = false
-	s.lastError = ""
-	s.parts = map[string]int{}
-	s.queueMu.Unlock()
-	body := map[string]any{}
 	parts, err := s.promptParts(p)
 	if err != nil {
 		return err
 	}
-	body["parts"] = parts
+	if err := s.beginTurn(); err != nil {
+		return err
+	}
+	body := map[string]any{"parts": parts}
+	s.queueMu.Lock()
+	s.parts = map[string]int{}
 	if s.model != "" {
 		body["model"] = openCodeModel(s.model)
 	}
 	if s.variant != "" {
 		body["variant"] = s.variant
 	}
-	s.queueMu.Lock()
 	first := s.first
 	s.first = false
 	instructions := s.instructions
@@ -418,7 +446,20 @@ func (s *openCodeSession) Prompt(ctx context.Context, p Prompt) error {
 	if first && strings.TrimSpace(instructions) != "" {
 		body["system"] = instructions
 	}
-	return s.srv.call(ctx, "POST", "/session/"+s.id+"/prompt_async", s.dir, body, nil)
+	if err := s.srv.call(ctx, "POST", "/session/"+s.id+"/prompt_async", s.dir, body, nil); err != nil {
+		s.endTurn()
+		return err
+	}
+	return nil
+}
+
+// SetModel changes the model of the next prompt. The running turn keeps its
+// model.
+func (s *openCodeSession) SetModel(_ context.Context, model string) error {
+	s.queueMu.Lock()
+	s.model = model
+	s.queueMu.Unlock()
+	return nil
 }
 
 // promptParts renders the prompt body: text plus file parts for attachments.
@@ -479,6 +520,7 @@ func (s *openCodeSession) parse(typ string, props map[string]any) []Event {
 	case "session.idle":
 		s.queueMu.Lock()
 		s.sawResult = true
+		s.busy = false
 		lastErr := s.lastError
 		s.queueMu.Unlock()
 		if lastErr != "" {
@@ -720,8 +762,130 @@ func (rt *Runtime) OpenCodeMessages(ctx context.Context, sessionID string) ([]by
 	return nil, false
 }
 
+// openCodeModels lists models through a shared server of the wire. The probe
+// shares a running server when the fingerprint matches. When no server
+// starts, V1 falls back to `opencode models`.
+func (rt *Runtime) openCodeModels(ctx context.Context, w openCodeWire, q ModelQuery) ([]ModelInfo, error) {
+	req := probeRequest(w.harness(), q, q.WorkingDir)
+	l, err := rt.prepare(ctx, &req, false)
+	if err != nil {
+		return nil, err
+	}
+	defer l.cleanup()
+	srv, err := rt.oc.acquireServer(ctx, w, l.bin, l.env, nil)
+	if err != nil {
+		if w.harness() == OpenCode {
+			if models, cliErr := openCodeCLIModels(ctx, l, q.WorkingDir); cliErr == nil {
+				return models, nil
+			}
+		}
+		return nil, err
+	}
+	defer rt.oc.release(srv)
+	return w.models(ctx, srv, q.WorkingDir)
+}
+
+// openCodeCLIModels runs `opencode models`, which prints one provider/model
+// per line.
+func openCodeCLIModels(ctx context.Context, l *launch, dir string) ([]ModelInfo, error) {
+	cmd := exec.CommandContext(ctx, l.bin, "models")
+	cmd.Dir = dir
+	cmd.Env = proc.ChildEnv(l.env)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("opencode models: %w", err)
+	}
+	var models []ModelInfo
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if provider, id, ok := strings.Cut(line, "/"); ok && provider != "" && id != "" && !strings.ContainsAny(line, " \t") {
+			models = append(models, ModelInfo{ID: line})
+		}
+	}
+	return models, nil
+}
+
+// sortModels orders a list by id, so a list from a JSON map is stable.
+func sortModels(models []ModelInfo) {
+	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
+}
+
+// contextText renders a context window size as a short description.
+func contextText(tokens int) string {
+	switch {
+	case tokens <= 0:
+		return ""
+	case tokens >= 1_000_000 && tokens%1_000_000 == 0:
+		return fmt.Sprintf("%dM context", tokens/1_000_000)
+	case tokens >= 1000:
+		return fmt.Sprintf("%dK context", tokens/1000)
+	}
+	return fmt.Sprintf("%d context", tokens)
+}
+
+// joinNonEmpty joins the non-empty values with " · ".
+func joinNonEmpty(values ...string) string {
+	var parts []string
+	for _, v := range values {
+		if v != "" {
+			parts = append(parts, v)
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
+// Models implements ModelLister.
+func (d openCodeDriver) Models(ctx context.Context, q ModelQuery) ([]ModelInfo, error) {
+	return d.rt.openCodeModels(ctx, openCodeV1{}, q)
+}
+
+// models reads the V1 provider list (GET /config/providers) and marks the
+// model of the merged config (GET /config) as the default.
+func (openCodeV1) models(ctx context.Context, srv *openCodeServer, dir string) ([]ModelInfo, error) {
+	var res struct {
+		Providers []struct {
+			ID     string `json:"id"`
+			Name   string `json:"name"`
+			Models map[string]struct {
+				ID    string `json:"id"`
+				Name  string `json:"name"`
+				Limit struct {
+					Context int `json:"context"`
+				} `json:"limit"`
+			} `json:"models"`
+		} `json:"providers"`
+	}
+	if err := srv.call(ctx, "GET", "/config/providers", dir, nil, &res); err != nil {
+		return nil, err
+	}
+	var cfg struct {
+		Model json.RawMessage `json:"model"`
+	}
+	_ = srv.call(ctx, "GET", "/config", dir, nil, &cfg)
+	def := openCodeConfigModel(cfg.Model)
+	var out []ModelInfo
+	for _, p := range res.Providers {
+		for key, m := range p.Models {
+			id := p.ID + "/" + firstNonEmpty(m.ID, key)
+			out = append(out, ModelInfo{
+				ID: id, Name: firstNonEmpty(m.Name, m.ID, key),
+				Description: joinNonEmpty(p.Name, contextText(m.Limit.Context)),
+				Default:     id == def,
+			})
+		}
+	}
+	sortModels(out)
+	return out, nil
+}
+
 // ensure the openCodeSession satisfies the Session interface.
 var _ Session = (*openCodeSession)(nil)
+
+// ensure the OpenCode session has the optional capabilities.
+var (
+	_ ModelLister = openCodeDriver{}
+	_ ModelSetter = (*openCodeSession)(nil)
+)
 
 // ensure the driver satisfies the Driver interface.
 var _ Driver = openCodeDriver{}

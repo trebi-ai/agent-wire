@@ -4,7 +4,42 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [v0.4.0] - 2026-09-27
+
+### Added
+
+- `Runtime.Models(ctx, harness, ModelQuery) ([]ModelInfo, error)` lists the models of one harness. A short-lived vendor child answers the first call, and the runtime caches the list by harness, binary, version and home. `Options.ModelCacheTTL` sets the lifetime (zero means 10 minutes, a negative value turns the cache off). A failed probe stays cached for 30 seconds. `Runtime.InvalidateModels(harness)` drops the cache.
+- `ModelLister` is the optional driver interface behind `Runtime.Models`. Claude, Codex, OpenCode, OpenCode 2, pi, Copilot, Cursor, Gemini and fake implement it. A driver from `Runtime.SetDriver` can implement it too.
+- `ModelSetter` changes the model of a live session without an interrupt. `SessionModels` returns the models the handshake offered (Claude, ACP).
+- `Steerer` adds input to the running turn. It returns `ErrNoActiveTurn` when no turn runs, and `ErrUnsupported` when the vendor refuses the input. Claude, Codex and pi sessions implement it.
+- `Features.Models`, `Features.SetModel` and `Features.Steer`.
+- `FakeDriver.ModelList` and `FakeModelsEnv` (`AGENTWIRE_FAKE_MODELS`) give the fake a model list. The fake session writes `steer` and `set_model` lines to its script. The field is `ModelList`, not `Models`, because `Models` is the method.
+
+### Changed
+
+- OpenCode and OpenCode 2: `Prompt` during a running turn returns `ErrTurnActive`. Before, the second prompt went to the server and the turn state was lost.
+- Codex: a refused `turn/steer` from `Steer` wraps `ErrUnsupported`. `Prompt` during a turn still falls back to an interrupt and a new turn.
+
+### Fixed
+
+- Codex: `turn/start` reads the session model under the lock.
+
+### Features
+
+The new `Features` fields, as verified on 2026-09-27 (`docs/compat.md`, "Models and mid-turn input"):
+
+| Harness | `Models` | `SetModel` | `Steer` |
+|---|---|---|---|
+| Claude | yes | yes | yes |
+| Codex | yes | yes | yes |
+| OpenCode | yes | yes | no (`ErrTurnActive`) |
+| OpenCode 2 | yes | yes | no (`ErrTurnActive`) |
+| pi | yes | yes | no: the session implements `Steerer`, but no live pi turn has proved it |
+| Copilot, Cursor, Gemini | yes | yes, when the agent offers a model list | no |
+| fake | yes | yes | yes |
+| native | no | no | no |
+
+## [v0.3.2] - 2026-09-27
 
 ### Added
 

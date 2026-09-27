@@ -105,6 +105,43 @@ func main() {
 
 A consumer MUST drain `Session.Events()` until the channel closes, or call `Session.Close`. `EventExit` is always the last event, and it is delivered even after `Close`. A consumer that stops reading without closing leaks the framing goroutine.
 
+## Models
+
+`Runtime.Models(ctx, harness, ModelQuery)` lists the models of one harness as `[]ModelInfo` (`ID`, `Name`, `Description`, `Default`). `ID` is the value that `StartRequest.Model` and `SetModel` take. The first call can start a short-lived vendor child (Claude `initialize`, Codex `model/list`, the OpenCode server, ACP `session/new`, pi `get_available_models`). The child sends no prompt and uses no model turn.
+
+The runtime caches each list by harness, binary, version and home. `Options.ModelCacheTTL` sets the lifetime: zero means 10 minutes, and a negative value turns the cache off. A failed probe stays in the cache for 30 seconds only. Call `Runtime.InvalidateModels(harness)` after a login or a config change. A harness without a lister returns `ErrUnsupported`. A driver from `Runtime.SetDriver` that implements `ModelLister` is used the same way.
+
+A live session can do more through two optional interfaces. Use a type assertion to find them:
+
+```go
+if sm, ok := sess.(agentwire.SessionModels); ok {
+	models := sm.Models() // the list the handshake offered, or nil
+}
+if ms, ok := sess.(agentwire.ModelSetter); ok {
+	err := ms.SetModel(ctx, "sonnet") // the next model call uses it
+}
+```
+
+`SetModel` never interrupts the running turn. Claude applies the model from its next API call. Codex and OpenCode apply it from the next prompt. `Features.Models` and `Features.SetModel` tell a picker what to show before a session exists.
+
+## Mid-turn input
+
+`Steerer` adds input to the running turn without an interrupt:
+
+```go
+if st, ok := sess.(agentwire.Steerer); ok {
+	err := st.Steer(ctx, agentwire.Prompt{Text: "Also run the tests."})
+	switch {
+	case errors.Is(err, agentwire.ErrNoActiveTurn):
+		// No turn runs. Send the text with Prompt.
+	case errors.Is(err, agentwire.ErrUnsupported):
+		// The vendor refused the input. Queue it for the next turn.
+	}
+}
+```
+
+The rule for a consumer: steer when `Features.Steer` is true, and queue the input for the next turn when it is false or when `Steer` returns `ErrUnsupported`. OpenCode and OpenCode 2 return `ErrTurnActive` from `Prompt` while a turn runs, so a consumer must wait for the result or queue the input.
+
 ## Extension points
 
 `StartRequest` carries everything the caller wants for one session. The library builds the command.
