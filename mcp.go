@@ -55,7 +55,17 @@ func (rt *Runtime) applyMCPServers(req *StartRequest, l *launch) error {
 			l.args = append(l.args, "--strict-mcp-config")
 		}
 	case Codex:
-		l.args = append(l.args, codexMCPArgs(req.MCPServers)...)
+		env, err := CodexMCPEnv(req.MCPServers)
+		if err != nil {
+			return err
+		}
+		for k, v := range env {
+			if prev, ok := l.env[k]; ok && prev != v {
+				return fmt.Errorf("agentwire: codex MCP env %s conflicts with the session env", k)
+			}
+			l.env[k] = v
+		}
+		l.args = append(l.args, CodexMCPArgs(req.MCPServers)...)
 	case OpenCode, OpenCode2:
 		content, err := openCodeConfigContent(req.MCPServers)
 		if err != nil {
@@ -114,13 +124,10 @@ func claudeMCPServers(servers []MCPServer) map[string]any {
 }
 
 // CodexMCPArgs renders the `-c mcp_servers.<name>...` overrides for injected
-// servers.
+// servers. It never renders a secret value: a stdio server lists its env keys
+// in env_vars, and a url server maps each header to an env var in
+// env_http_headers. The process must carry CodexMCPEnv.
 func CodexMCPArgs(servers []MCPServer) []string {
-	return codexMCPArgs(servers)
-}
-
-// codexMCPArgs renders `-c mcp_servers.<name>...` overrides.
-func codexMCPArgs(servers []MCPServer) []string {
 	var args []string
 	for _, s := range servers {
 		if s.Name == "" {
@@ -130,17 +137,75 @@ func codexMCPArgs(servers []MCPServer) []string {
 		switch {
 		case s.URL != "":
 			args = append(args, "-c", prefix+`url=`+tomlString(s.URL))
+			if len(s.Headers) > 0 {
+				vars := make(map[string]string, len(s.Headers))
+				for h := range s.Headers {
+					vars[h] = codexHeaderEnvVar(s.Name, h)
+				}
+				args = append(args, "-c", prefix+"env_http_headers="+tomlStringTable(vars))
+			}
 		case s.Command != "":
 			args = append(args, "-c", prefix+`command=`+tomlString(s.Command))
 			if len(s.Args) > 0 {
 				args = append(args, "-c", prefix+"args="+tomlStringList(s.Args))
 			}
 			if len(s.Env) > 0 {
-				args = append(args, "-c", prefix+"env="+tomlStringTable(s.Env))
+				args = append(args, "-c", prefix+"env_vars="+tomlStringList(sortedKeys(s.Env)))
 			}
 		}
 	}
 	return args
+}
+
+// CodexMCPEnv returns the env that the codex process must carry for the
+// servers of CodexMCPArgs. Codex has one process env, so two servers that set
+// one key to different values return an error.
+func CodexMCPEnv(servers []MCPServer) (map[string]string, error) {
+	env := map[string]string{}
+	set := func(k, v string) error {
+		if prev, ok := env[k]; ok && prev != v {
+			return fmt.Errorf("agentwire: codex MCP env %s has two different values", k)
+		}
+		env[k] = v
+		return nil
+	}
+	for _, s := range servers {
+		if s.Name == "" {
+			continue
+		}
+		switch {
+		case s.URL != "":
+			for h, v := range s.Headers {
+				if err := set(codexHeaderEnvVar(s.Name, h), v); err != nil {
+					return nil, err
+				}
+			}
+		case s.Command != "":
+			for k, v := range s.Env {
+				if err := set(k, v); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+	return env, nil
+}
+
+// codexHeaderEnvVar names the env var that carries one header value, for
+// example AGENTWIRE_MCP_GITHUB_AUTHORIZATION.
+func codexHeaderEnvVar(server, header string) string {
+	clean := func(s string) string {
+		return strings.Map(func(r rune) rune {
+			switch {
+			case r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+				return r
+			case r >= 'a' && r <= 'z':
+				return r - 'a' + 'A'
+			}
+			return '_'
+		}, s)
+	}
+	return "AGENTWIRE_MCP_" + clean(server) + "_" + clean(header)
 }
 
 // OpenCodeConfigContent renders the OpenCode config fragment that carries the

@@ -164,11 +164,84 @@ func TestMCPCodexArgs(t *testing.T) {
 	want := []string{
 		"-c", `mcp_servers.local.command="cmd"`,
 		"-c", `mcp_servers.local.args=["a", "b"]`,
-		"-c", `mcp_servers.local.env={"K" = "V"}`,
+		"-c", `mcp_servers.local.env_vars=["K"]`,
 		"-c", `mcp_servers.remote.url="https://example.test/mcp"`,
+		"-c", `mcp_servers.remote.env_http_headers={"Authorization" = "AGENTWIRE_MCP_REMOTE_AUTHORIZATION"}`,
 	}
 	if !slices.Equal(l.args, want) {
 		t.Fatalf("codex args =\n%q\nwant\n%q", l.args, want)
+	}
+	if l.env["K"] != "V" || l.env["AGENTWIRE_MCP_REMOTE_AUTHORIZATION"] != "token" {
+		t.Fatalf("codex env = %v, want K and the header var", l.env)
+	}
+}
+
+// TestCodexMCPSecretsInEnvOnly checks that no secret value reaches the args
+// and that the env carries each one.
+func TestCodexMCPSecretsInEnvOnly(t *testing.T) {
+	servers := []MCPServer{
+		{Name: "gh", Command: "gh-mcp", Env: map[string]string{"GH_TOKEN": "s3cret-env"}},
+		{Name: "api-x", URL: "https://x.test/mcp", Headers: map[string]string{
+			"Authorization": "Bearer s3cret-hdr",
+			"X-Org":         "acme",
+		}},
+	}
+	args := CodexMCPArgs(servers)
+	joined := strings.Join(args, " ")
+	for _, secret := range []string{"s3cret-env", "s3cret-hdr", "acme"} {
+		if strings.Contains(joined, secret) {
+			t.Fatalf("args hold %q: %q", secret, args)
+		}
+	}
+	if !injTestArgPair(args, "-c", `mcp_servers.gh.env_vars=["GH_TOKEN"]`) {
+		t.Fatalf("missing env_vars: %q", args)
+	}
+	wantHeaders := `mcp_servers.api-x.env_http_headers={"Authorization" = "AGENTWIRE_MCP_API_X_AUTHORIZATION", "X-Org" = "AGENTWIRE_MCP_API_X_X_ORG"}`
+	if !injTestArgPair(args, "-c", wantHeaders) {
+		t.Fatalf("missing env_http_headers: %q", args)
+	}
+
+	env, err := CodexMCPEnv(servers)
+	if err != nil {
+		t.Fatalf("CodexMCPEnv: %v", err)
+	}
+	want := map[string]string{
+		"GH_TOKEN":                          "s3cret-env",
+		"AGENTWIRE_MCP_API_X_AUTHORIZATION": "Bearer s3cret-hdr",
+		"AGENTWIRE_MCP_API_X_X_ORG":         "acme",
+	}
+	if !reflect.DeepEqual(env, want) {
+		t.Fatalf("env = %v, want %v", env, want)
+	}
+}
+
+// TestCodexMCPEnvConflict checks that one key with two values is an error,
+// and that one key with one value is not.
+func TestCodexMCPEnvConflict(t *testing.T) {
+	same := []MCPServer{
+		{Name: "a", Command: "a", Env: map[string]string{"TOKEN": "x"}},
+		{Name: "b", Command: "b", Env: map[string]string{"TOKEN": "x"}},
+	}
+	if _, err := CodexMCPEnv(same); err != nil {
+		t.Fatalf("same value: %v", err)
+	}
+	diff := []MCPServer{
+		{Name: "a", Command: "a", Env: map[string]string{"TOKEN": "x"}},
+		{Name: "b", Command: "b", Env: map[string]string{"TOKEN": "y"}},
+	}
+	if _, err := CodexMCPEnv(diff); err == nil {
+		t.Fatal("two values for TOKEN: want an error")
+	}
+
+	rt := injTestRuntime(t)
+	req := StartRequest{
+		Harness:    Codex,
+		Binary:     "/bin/sh",
+		Env:        map[string]string{"TOKEN": "job"},
+		MCPServers: same,
+	}
+	if _, err := rt.prepare(context.Background(), &req, false); err == nil {
+		t.Fatal("MCP env over a different session env value: want an error")
 	}
 }
 

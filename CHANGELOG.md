@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `CodexMCPEnv(servers) (map[string]string, error)` returns the env that the codex process must carry for injected MCP servers. It returns an error when two servers set one key to different values.
+
+### Changed
+
+- `CodexMCPArgs` does not render secret values. A stdio server lists its env keys in `env_vars`. A url server maps each header to an `AGENTWIRE_MCP_<SERVER>_<HEADER>` env var in `env_http_headers`. The codex driver puts those values in the process env. A caller that starts codex itself must also merge `CodexMCPEnv`.
+
+### Fixed
+
+- Codex no longer drops the headers of an injected url server.
+
 ## [v0.3.1] - 2026-09-27
 
 ### Added
