@@ -51,6 +51,7 @@ jobs:
           name: coverage-linux
           path: coverage.out
           if-no-files-found: error
+          retention-days: 7
 
   # Tags each module whose code changed. See scripts/tag.sh for the rules.
   tag:
