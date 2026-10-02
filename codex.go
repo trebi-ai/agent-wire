@@ -214,6 +214,10 @@ type codexProtocol struct {
 	turnID     string
 	turnActive bool
 	sawResult  bool
+	// turnUsage is the usage of the open turn. turnBase is the thread total
+	// before the first model call of the turn.
+	turnUsage Usage
+	turnBase  *Usage
 	// approvals maps a server request id to its method, so a later decision
 	// knows which reply body to render.
 	approvals map[string]string
@@ -568,6 +572,8 @@ func (p *codexProtocol) Parse(line []byte) []Event {
 			p.mu.Lock()
 			p.turnID = str(turn["id"])
 			p.turnActive = true
+			p.turnUsage = Usage{}
+			p.turnBase = nil
 			p.mu.Unlock()
 		}
 		return []Event{{Type: EventStatus, Status: StatusRunning}}
@@ -580,8 +586,10 @@ func (p *codexProtocol) Parse(line []byte) []Event {
 			return []Event{{Type: EventAssistant, Text: text, Delta: true}}
 		}
 	case "thread/tokenUsage/updated", "thread/token_usage/updated":
-		if u := codexUsage(params); u != nil {
-			return []Event{{Type: EventUsage, Usage: u}}
+		last, total := codexTokenUsage(params)
+		p.noteTurnUsage(str(params["turnId"]), last, total)
+		if total != nil {
+			return []Event{{Type: EventUsage, Usage: total}}
 		}
 	case "error":
 		text := firstNonEmpty(str(params["message"]), fmt.Sprint(params["error"]))
@@ -698,12 +706,15 @@ func (p *codexProtocol) parseTurnCompleted(params map[string]any) []Event {
 	p.turnActive = false
 	p.turnID = ""
 	p.sawResult = true
+	usage := p.turnUsage
+	p.turnUsage = Usage{}
+	p.turnBase = nil
 	p.mu.Unlock()
 	switch status {
 	case "", "completed", "success":
-		return []Event{{Type: EventResult, Result: &Result{Subtype: "success"}}}
+		return []Event{{Type: EventResult, Result: &Result{Subtype: "success", Usage: usage}}}
 	case "interrupted", "cancelled", "canceled":
-		return []Event{{Type: EventResult, Result: &Result{Subtype: "interrupted", IsError: true, Text: "turn interrupted"}}}
+		return []Event{{Type: EventResult, Result: &Result{Subtype: "interrupted", IsError: true, Text: "turn interrupted", Usage: usage}}}
 	}
 	text := ""
 	if turn != nil {
@@ -720,7 +731,7 @@ func (p *codexProtocol) parseTurnCompleted(params map[string]any) []Event {
 	c := ClassifyFor(Codex, text, 0)
 	return []Event{{Type: EventResult, Result: &Result{
 		Subtype: status, IsError: true, Text: text,
-		EndReason: string(c.Class), Code: c.Code,
+		EndReason: string(c.Class), Code: c.Code, Usage: usage,
 	}}}
 }
 
@@ -887,25 +898,76 @@ func codexThreadID(res map[string]any) string {
 	return str(res["id"])
 }
 
-func codexUsage(params map[string]any) *Usage {
+// noteTurnUsage adds one token usage notification to the open turn. Codex
+// sends "last" for one model call and "total" for the thread, and a turn can
+// make many model calls. The turn usage is the total now minus the total
+// before the first call of the turn. A repeated notification adds nothing.
+func (p *codexProtocol) noteTurnUsage(turnID string, last, total *Usage) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.turnActive || (turnID != "" && p.turnID != "" && turnID != p.turnID) {
+		return
+	}
+	switch {
+	case total != nil:
+		if p.turnBase == nil {
+			base := *total
+			if last != nil {
+				base = codexUsageSub(base, *last)
+			}
+			p.turnBase = &base
+		}
+		p.turnUsage = codexUsageSub(*total, *p.turnBase)
+	case last != nil:
+		p.turnUsage.Input += last.Input
+		p.turnUsage.Output += last.Output
+		p.turnUsage.CacheRead += last.CacheRead
+		p.turnUsage.CacheCreation += last.CacheCreation
+	}
+}
+
+// codexTokenUsage reads the ThreadTokenUsage of a thread/tokenUsage/updated
+// notification: "last" is one model call, "total" is the thread.
+func codexTokenUsage(params map[string]any) (last, total *Usage) {
 	tu, _ := params["tokenUsage"].(map[string]any)
 	if tu == nil {
 		tu = params
 	}
-	total, _ := tu["total"].(map[string]any)
-	if total == nil {
-		total = tu
+	lm, _ := tu["last"].(map[string]any)
+	tm, _ := tu["total"].(map[string]any)
+	if lm == nil && tm == nil {
+		return nil, codexBreakdown(tu)
+	}
+	return codexBreakdown(lm), codexBreakdown(tm)
+}
+
+// codexBreakdown reads one TokenUsageBreakdown. It returns nil when every
+// counter is 0.
+func codexBreakdown(m map[string]any) *Usage {
+	if m == nil {
+		return nil
 	}
 	u := &Usage{
-		Input:         int64(num(total["inputTokens"]) + num(total["input_tokens"])),
-		Output:        int64(num(total["outputTokens"]) + num(total["output_tokens"])),
-		CacheRead:     int64(num(total["cachedInputTokens"]) + num(total["cached_input_tokens"])),
-		CacheCreation: int64(num(total["cacheCreationInputTokens"]) + num(total["cache_creation_input_tokens"])),
+		Input:         int64(num(m["inputTokens"]) + num(m["input_tokens"])),
+		Output:        int64(num(m["outputTokens"]) + num(m["output_tokens"])),
+		CacheRead:     int64(num(m["cachedInputTokens"]) + num(m["cached_input_tokens"])),
+		CacheCreation: int64(num(m["cacheWriteInputTokens"]) + num(m["cache_write_input_tokens"])),
 	}
 	if u.Input == 0 && u.Output == 0 && u.CacheRead == 0 && u.CacheCreation == 0 {
 		return nil
 	}
 	return u
+}
+
+// codexUsageSub returns a minus b. A counter never goes below 0.
+func codexUsageSub(a, b Usage) Usage {
+	sub := func(x, y int64) int64 { return max(x-y, 0) }
+	return Usage{
+		Input:         sub(a.Input, b.Input),
+		Output:        sub(a.Output, b.Output),
+		CacheRead:     sub(a.CacheRead, b.CacheRead),
+		CacheCreation: sub(a.CacheCreation, b.CacheCreation),
+	}
 }
 
 func codexExitCode(v any) *int {

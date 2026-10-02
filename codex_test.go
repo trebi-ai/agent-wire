@@ -387,20 +387,118 @@ func TestCodexItemEvents(t *testing.T) {
 	}
 }
 
-// TestCodexUsage maps the token usage notification.
+// TestCodexUsage maps the token usage notification. EventUsage carries the
+// thread total, which is cumulative.
 func TestCodexUsage(t *testing.T) {
 	peer, s, _ := coaTestStartCodex(t, StartRequest{}, coaTestCodexHandshake)
 	events := coaTestWatch(t, s.Events())
 
-	peer.notify("thread/tokenUsage/updated", map[string]any{"tokenUsage": map[string]any{
-		"total": map[string]any{"inputTokens": 11, "outputTokens": 4, "cachedInputTokens": 3},
+	peer.notify("thread/tokenUsage/updated", map[string]any{"threadId": "thr_1", "turnId": "turn_1", "tokenUsage": map[string]any{
+		"last":  map[string]any{"inputTokens": 2, "outputTokens": 1, "cachedInputTokens": 0, "cacheWriteInputTokens": 0},
+		"total": map[string]any{"inputTokens": 11, "outputTokens": 4, "cachedInputTokens": 3, "cacheWriteInputTokens": 2},
 	}})
 	usage := events.next(EventUsage)
 	if usage.Usage == nil {
 		t.Fatalf("usage event: %+v", usage)
 	}
-	if usage.Usage.Input != 11 || usage.Usage.Output != 4 || usage.Usage.CacheRead != 3 {
+	if usage.Usage.Input != 11 || usage.Usage.Output != 4 || usage.Usage.CacheRead != 3 || usage.Usage.CacheCreation != 2 {
 		t.Fatalf("usage counters: %+v", usage.Usage)
+	}
+}
+
+// coaTestCodexUsage builds a thread/tokenUsage/updated payload with the
+// app-server field names.
+func coaTestCodexUsage(turnID string, lastIn, lastOut, totalIn, totalOut int) map[string]any {
+	return map[string]any{"threadId": "thr_1", "turnId": turnID, "tokenUsage": map[string]any{
+		"last":  map[string]any{"inputTokens": lastIn, "outputTokens": lastOut, "cachedInputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": lastIn + lastOut},
+		"total": map[string]any{"inputTokens": totalIn, "outputTokens": totalOut, "cachedInputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": totalIn + totalOut},
+	}}
+}
+
+// TestCodexTurnUsage proves the Result of a turn carries the usage of that
+// turn only, not the thread total. turn/completed has no usage; the usage
+// comes on thread/tokenUsage/updated before it.
+func TestCodexTurnUsage(t *testing.T) {
+	peer, s, _ := coaTestStartCodex(t, StartRequest{}, coaTestCodexHandshake)
+	events := coaTestWatch(t, s.Events())
+
+	// Turn 1 makes one model call: the turn usage is "last".
+	peer.notify("turn/started", map[string]any{"turn": map[string]any{"id": "turn_1"}})
+	peer.notify("thread/tokenUsage/updated", coaTestCodexUsage("turn_1", 100, 10, 100, 10))
+	peer.notify("turn/completed", map[string]any{"turn": map[string]any{"id": "turn_1", "status": "completed"}})
+	res := events.next(EventResult)
+	if got := res.Result.Usage; got.Input != 100 || got.Output != 10 {
+		t.Fatalf("turn 1 usage: %+v", got)
+	}
+
+	// Turn 2 makes two model calls, and Codex repeats the last notification.
+	// The turn usage is the sum of the two calls, not the thread total.
+	peer.notify("turn/started", map[string]any{"turn": map[string]any{"id": "turn_2"}})
+	peer.notify("thread/tokenUsage/updated", coaTestCodexUsage("turn_2", 120, 5, 220, 15))
+	peer.notify("thread/tokenUsage/updated", coaTestCodexUsage("turn_2", 130, 7, 350, 22))
+	peer.notify("thread/tokenUsage/updated", coaTestCodexUsage("turn_2", 130, 7, 350, 22))
+	peer.notify("turn/completed", map[string]any{"turn": map[string]any{"id": "turn_2", "status": "completed"}})
+	res = events.next(EventResult)
+	if got := res.Result.Usage; got.Input != 250 || got.Output != 12 {
+		t.Fatalf("turn 2 usage: %+v", got)
+	}
+
+	// A notification outside a turn changes no turn. A failed turn with no
+	// usage reports 0.
+	peer.notify("thread/tokenUsage/updated", coaTestCodexUsage("turn_old", 9, 9, 400, 40))
+	peer.notify("turn/started", map[string]any{"turn": map[string]any{"id": "turn_3"}})
+	peer.notify("turn/completed", map[string]any{"turn": map[string]any{
+		"id": "turn_3", "status": "failed", "error": map[string]any{"message": "boom"},
+	}})
+	res = events.next(EventResult)
+	if !res.Result.IsError || res.Result.Usage != (Usage{}) {
+		t.Fatalf("turn 3 result: %+v", res.Result)
+	}
+}
+
+// TestCodexResumeRequest proves a session with a SessionID sends
+// thread/resume, not thread/start, with the thread id and the thread settings.
+func TestCodexResumeRequest(t *testing.T) {
+	handler := func(p *coaTestPeer, m coaTestFrame) {
+		if m.method() == "thread/resume" {
+			// The app-server answers with a Thread object.
+			p.reply(m.m["id"], map[string]any{"thread": map[string]any{"id": m.params()["threadId"]}})
+			return
+		}
+		coaTestCodexHandshake(p, m)
+	}
+	req := StartRequest{
+		SessionID:   "thr_old",
+		WorkingDir:  "/tmp/coa-resume",
+		Model:       "gpt-5-mini",
+		Permissions: PermissionPolicy{Mode: PermissionAuto},
+	}
+	peer, s, _ := coaTestStartCodex(t, req, handler)
+	events := coaTestWatch(t, s.Events())
+
+	f := peer.wait(func(f coaTestFrame) bool {
+		return f.method() == "thread/start" || f.method() == "thread/resume"
+	})
+	if f.method() != "thread/resume" {
+		t.Fatalf("handshake sent %s, want thread/resume", f.method())
+	}
+	params := f.params()
+	want := map[string]any{
+		"threadId":       "thr_old",
+		"cwd":            "/tmp/coa-resume",
+		"model":          "gpt-5-mini",
+		"approvalPolicy": codexApprovalPolicy(req.Permissions),
+		"sandbox":        "workspace-write",
+	}
+	for k, v := range want {
+		if params[k] != v {
+			t.Errorf("thread/resume %s = %v, want %v (params %+v)", k, params[k], v, params)
+		}
+	}
+
+	init := events.next(EventInit)
+	if init.SessionID != "thr_old" || s.ID() != "thr_old" {
+		t.Fatalf("resume init: %+v id=%q", init, s.ID())
 	}
 }
 

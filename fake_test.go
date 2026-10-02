@@ -106,6 +106,24 @@ echo '{"type":"result","subtype":"success"}'`
 	}
 }
 
+// TestFakeDriverResultUsage covers the optional usage and session id of a
+// fake result frame.
+func TestFakeDriverResultUsage(t *testing.T) {
+	rtTestSkipWithoutShell(t)
+	const script = `echo '{"type":"result","subtype":"success","session_id":"s2","usage":{"input":12,"output":4,"model":"m1"}}'`
+	sess, err := FakeDriver{Script: script}.Start(context.Background(), StartRequest{Harness: Fake})
+	if err != nil {
+		t.Fatalf("start the fake session: %v", err)
+	}
+	t.Cleanup(func() { rtTestCloseSession(t, sess) })
+
+	events := rtTestCollectEvents(t, sess)
+	res := events[0].Result
+	if res == nil || res.SessionID != "s2" || res.Usage.Input != 12 || res.Usage.Output != 4 || res.Usage.Model != "m1" {
+		t.Fatalf("result event = %+v", res)
+	}
+}
+
 // TestFakeDriverNonZeroExit covers the failure path: a script that exits
 // non-zero produces an error event and a non-zero EventExit.
 func TestFakeDriverNonZeroExit(t *testing.T) {

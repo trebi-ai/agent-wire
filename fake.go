@@ -190,11 +190,19 @@ func (p *fakeProtocol) Parse(line []byte) []Event {
 		p.turnActive = false
 		p.mu.Unlock()
 		isErr, _ := m["is_error"].(bool)
-		return []Event{{Type: EventResult, Result: &Result{
+		res := &Result{
 			Subtype: orDefault(text("subtype"), "success"),
 			IsError: isErr,
 			Text:    text("text"),
-		}}}
+		}
+		if sid, ok := m["session_id"].(string); ok {
+			res.SessionID = sid
+		}
+		if u, ok := m["usage"].(map[string]any); ok {
+			model, _ := u["model"].(string)
+			res.Usage = Usage{Input: int64(num(u["input"])), Output: int64(num(u["output"])), Model: model}
+		}
+		return []Event{{Type: EventResult, Result: res}}
 	case "error":
 		return []Event{{Type: EventError, Error: text("error"), Code: text("code"), EndReason: text("end_reason")}}
 	case "status":
