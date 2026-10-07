@@ -2,7 +2,6 @@ package agentwire
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -60,11 +59,42 @@ type Steerer interface {
 }
 
 // ErrNoActiveTurn reports a Steer with no running turn.
-var ErrNoActiveTurn = errors.New("agentwire: no active turn")
+var ErrNoActiveTurn = wire.ErrNoActiveTurn
 
 // ErrTurnActive reports a Prompt while a turn runs on a harness that cannot
 // take a second prompt then. The caller waits for the result, or steers.
-var ErrTurnActive = errors.New("agentwire: a turn is active")
+var ErrTurnActive = wire.ErrTurnActive
+
+// Delivery tells how Send delivered a prompt.
+type Delivery = wire.Delivery
+
+const (
+	// DeliverySteered means the prompt joined the running turn.
+	DeliverySteered = wire.DeliverySteered
+	// DeliveryPrompted means a new turn starts now, or the vendor queues it.
+	DeliveryPrompted = wire.DeliveryPrompted
+	// DeliveryHeld means the prompt starts a new turn when the running turn
+	// ends.
+	DeliveryHeld = wire.DeliveryHeld
+)
+
+// CodeHeldPromptDropped is the EventError code of held prompts that never
+// reached the vendor, because the session ended first. Text holds them.
+const CodeHeldPromptDropped = wire.CodeHeldPromptDropped
+
+// Sender is the session capability behind Send.
+type Sender interface {
+	Send(ctx context.Context, p Prompt) (Delivery, error)
+}
+
+// Send delivers p in one call: it steers the running turn, else prompts,
+// else holds p until the turn ends. A session with no Sender gets Prompt.
+func Send(ctx context.Context, s Session, p Prompt) (Delivery, error) {
+	if sd, ok := s.(Sender); ok {
+		return sd.Send(ctx, p)
+	}
+	return DeliveryPrompted, s.Prompt(ctx, p)
+}
 
 // Model list timings.
 const (

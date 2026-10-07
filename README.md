@@ -126,21 +126,25 @@ if ms, ok := sess.(agentwire.ModelSetter); ok {
 
 ## Mid-turn input
 
-`Steerer` adds input to the running turn without an interrupt:
+`Send` delivers a prompt in one call, whatever the turn state:
 
 ```go
-if st, ok := sess.(agentwire.Steerer); ok {
-	err := st.Steer(ctx, agentwire.Prompt{Text: "Also run the tests."})
-	switch {
-	case errors.Is(err, agentwire.ErrNoActiveTurn):
-		// No turn runs. Send the text with Prompt.
-	case errors.Is(err, agentwire.ErrUnsupported):
-		// The vendor refused the input. Queue it for the next turn.
-	}
+d, err := agentwire.Send(ctx, sess, agentwire.Prompt{Text: "Also run the tests."})
+switch d {
+case agentwire.DeliverySteered:
+	// The input joined the running turn.
+case agentwire.DeliveryPrompted:
+	// A new turn starts now, or the vendor queues it.
+case agentwire.DeliveryHeld:
+	// The session sends it as a new turn when the running turn ends.
 }
 ```
 
-The rule for a consumer: steer when `Features.Steer` is true, and queue the input for the next turn when it is false or when `Steer` returns `ErrUnsupported`. OpenCode and OpenCode 2 return `ErrTurnActive` from `Prompt` while a turn runs, so a consumer must wait for the result or queue the input.
+`Send` tries `Steer` first. When no turn runs, it calls `Prompt`. When the vendor refuses the steer, or the session cannot steer, it holds the prompt. At the result of the turn, the session joins all held prompts with a blank line and sends them as one turn with `Kind: "followup"`. When the process exits first, the session emits one `EventError` with code `held_prompt_dropped`, and `Text` holds the dropped prompts.
+
+`Prompt` during a turn returns `ErrTurnActive`, except on Claude, which queues the second prompt itself.
+
+`Steerer` is the low-level call behind `Send`. It returns `ErrNoActiveTurn` when no turn runs, and `ErrUnsupported` when the vendor refuses the input.
 
 ## Extension points
 

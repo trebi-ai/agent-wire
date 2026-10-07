@@ -613,9 +613,22 @@ func (p *acpProtocol) authenticate(ctx context.Context) error {
 	return nil
 }
 
+// TurnActive implements wire.TurnStater: a session/prompt waits for its
+// response.
+func (p *acpProtocol) TurnActive() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.promptID != ""
+}
+
 // EncodePrompt sends session/prompt. Its response is the turn completion.
+// It returns ErrTurnActive while a prompt waits for its response.
 func (p *acpProtocol) EncodePrompt(pr Prompt) ([]byte, error) {
 	p.mu.Lock()
+	if p.promptID != "" {
+		p.mu.Unlock()
+		return nil, ErrTurnActive
+	}
 	p.sawResult = false
 	id := p.client.NextID()
 	p.promptID = string(id.Raw())

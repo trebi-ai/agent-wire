@@ -77,16 +77,19 @@ func (s *piSession) SetModel(ctx context.Context, model string) error {
 	return err
 }
 
+// Steer adds input to the running turn.
+func (s *piSession) Steer(ctx context.Context, pr Prompt) error { return s.p.Steer(ctx, pr) }
+
 // Steer sends the steer command. Pi delivers the message after the running
 // tool calls and before the next model call.
-func (s *piSession) Steer(ctx context.Context, pr Prompt) error {
+func (p *piProtocol) Steer(ctx context.Context, pr Prompt) error {
 	if len(pr.Attachments) > 0 {
 		return fmt.Errorf("%w: pi does not accept steer attachments", ErrUnsupported)
 	}
-	if !s.p.active() {
+	if !p.active() {
 		return ErrNoActiveTurn
 	}
-	if _, err := s.p.request(ctx, map[string]any{"type": "steer", "message": pr.Text}); err != nil {
+	if _, err := p.request(ctx, map[string]any{"type": "steer", "message": pr.Text}); err != nil {
 		return fmt.Errorf("%w: pi steer: %v", ErrUnsupported, err)
 	}
 	return nil
@@ -233,6 +236,9 @@ func (p *piProtocol) active() bool {
 	return p.turnActive
 }
 
+// TurnActive implements wire.TurnStater.
+func (p *piProtocol) TurnActive() bool { return p.active() }
+
 // request sends one command with an id and waits for its response. A
 // success:false response returns its error text.
 func (p *piProtocol) request(ctx context.Context, cmd map[string]any) (json.RawMessage, error) {
@@ -304,6 +310,10 @@ func (p *piProtocol) EncodePrompt(pr Prompt) ([]byte, error) {
 		return nil, fmt.Errorf("%w: pi does not accept prompt attachments", ErrUnsupported)
 	}
 	p.mu.Lock()
+	if p.turnActive {
+		p.mu.Unlock()
+		return nil, ErrTurnActive
+	}
 	first := p.firstPrompt
 	p.firstPrompt = false
 	p.sawEnd = false

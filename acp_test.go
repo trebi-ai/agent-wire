@@ -249,6 +249,11 @@ func TestACPPromptResults(t *testing.T) {
 		t.Fatalf("exit code: %q", evs[0].Code)
 	}
 
+	// The simulated crash left the prompt open; clear it for the next turn.
+	proto.mu.Lock()
+	proto.promptID = ""
+	proto.mu.Unlock()
+
 	// A refused stop reason is an error result.
 	id = coaTestPromptID(t, coaTestMustEncode(t, proto, "third"), "session/prompt")
 	peer.push(coaTestResponse(t, id, map[string]any{"stopReason": "refused"}))

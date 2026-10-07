@@ -119,6 +119,8 @@ type Session struct {
 
 	errMu sync.Mutex
 	err   error
+
+	out Outbox
 }
 
 // Config tunes one wire session.
@@ -209,6 +211,7 @@ func NewMemorySession(harness string, adapter Adapter, stdin io.Writer, stdout i
 	s.stdin = stdin
 	go func() {
 		s.scan(stdout)
+		s.dropHeld()
 		s.finish()
 	}()
 	w := &Writer{s: s}
@@ -412,8 +415,12 @@ func (s *Session) write(b []byte) error {
 
 var errNoStdin = errors.New("agentwire: session stdin is closed")
 
-// Prompt writes one user turn. The child must still be alive.
+// Prompt writes one user turn. The child must still be alive. During a
+// turn it returns ErrTurnActive, unless the vendor queues a second prompt.
 func (s *Session) Prompt(ctx context.Context, p Prompt) error {
+	if s.active() && !s.concurrent() {
+		return ErrTurnActive
+	}
 	s.bumpTurn()
 	if sp, ok := s.adapter.(Prompter); ok {
 		return sp.PromptSession(ctx, p)
@@ -423,6 +430,51 @@ func (s *Session) Prompt(ctx context.Context, p Prompt) error {
 		return err
 	}
 	return s.WriteFrame(frame)
+}
+
+// Send steers the running turn, else prompts, else holds p and sends it
+// when the turn ends.
+func (s *Session) Send(ctx context.Context, p Prompt) (Delivery, error) {
+	ops := SendOps{Active: s.active, Prompt: s.Prompt, Concurrent: s.concurrent()}
+	if st, ok := s.adapter.(SteerAdapter); ok {
+		ops.Steer = st.Steer
+	}
+	return s.out.Send(ctx, ops, p)
+}
+
+func (s *Session) active() bool {
+	ts, ok := s.adapter.(TurnStater)
+	return ok && ts.TurnActive()
+}
+
+func (s *Session) concurrent() bool {
+	c, ok := s.adapter.(ConcurrentPrompter)
+	return ok && c.ConcurrentPrompt()
+}
+
+// flushHeld sends the held prompts after a turn ended. A Prompter waits for
+// a reply that this read loop parses, so it flushes on its own goroutine.
+func (s *Session) flushHeld() {
+	if !s.out.Pending() || s.active() {
+		return
+	}
+	run := func() {
+		if dropped := s.out.Flush(context.Background(), s.Prompt); len(dropped) > 0 {
+			s.emit(DroppedEvent(dropped))
+		}
+	}
+	if _, ok := s.adapter.(Prompter); ok {
+		go run()
+		return
+	}
+	run()
+}
+
+// dropHeld reports the held prompts of a session that ends.
+func (s *Session) dropHeld() {
+	if dropped := s.out.Drop(); len(dropped) > 0 {
+		s.emit(DroppedEvent(dropped))
+	}
 }
 
 // WriteFrame writes one newline-terminated NDJSON frame.
@@ -543,6 +595,7 @@ func (s *Session) readLoop() {
 	for _, e := range s.adapter.Exit(code, err, stderr) {
 		s.emit(e)
 	}
+	s.dropHeld()
 	s.exitEvent(code, err, stderr)
 	s.finish()
 }
@@ -581,6 +634,13 @@ func (s *Session) scan(r io.Reader) {
 		for _, e := range s.adapter.Parse(line) {
 			if len(e.Raw) == 0 {
 				e.Raw = append([]byte(nil), line...)
+			}
+			if e.Type == EventResult || e.Type == EventError {
+				// Keep the turn of the result before a flush starts the next.
+				if e.Turn == 0 {
+					e.Turn = s.Turn()
+				}
+				s.flushHeld()
 			}
 			s.emit(e)
 		}

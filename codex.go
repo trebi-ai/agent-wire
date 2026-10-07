@@ -19,9 +19,6 @@ import (
 // Codex app-server timings.
 const (
 	codexHandshakeTimeout = 30 * time.Second
-	// codexInterruptWait bounds the interrupt to new-turn fallback. A steer is
-	// preferred; an older pin answers method-not-found and lands here.
-	codexInterruptWait = 5 * time.Second
 	// codexPromptAckWait bounds the turn/start ack wait: the turn is live even
 	// if the pin streams notifications without an RPC response.
 	codexPromptAckWait = 2 * time.Second
@@ -341,30 +338,30 @@ func (p *codexProtocol) EncodePrompt(pr Prompt) ([]byte, error) {
 	})
 }
 
-// PromptSession is the live prompt path: turn/steer while a turn is active,
-// falling back to interrupt plus a new turn when the pin rejects steer.
+// PromptSession starts a turn with turn/start. It returns ErrTurnActive while
+// a turn runs; Send steers or holds the prompt instead.
 func (p *codexProtocol) PromptSession(ctx context.Context, pr Prompt) error {
 	p.mu.Lock()
-	threadID, turnID, active := p.threadID, p.turnID, p.turnActive
+	threadID, active := p.threadID, p.turnActive
 	p.mu.Unlock()
 	if threadID == "" {
 		return errors.New("codex: thread not started")
+	}
+	if active {
+		return ErrTurnActive
 	}
 	input, err := p.inputItems(pr)
 	if err != nil {
 		return err
 	}
-	if active {
-		err := p.steer(ctx, threadID, turnID, input)
-		if err == nil || ctx.Err() != nil {
-			return err
-		}
-		if err := p.interruptTurn(); err != nil {
-			return err
-		}
-		p.awaitTurnEnd(ctx, turnID)
-	}
 	return p.startTurn(ctx, threadID, input)
+}
+
+// TurnActive implements wire.TurnStater.
+func (p *codexProtocol) TurnActive() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.turnActive
 }
 
 // Steer adds input to the running turn with turn/steer. It never interrupts.
@@ -450,26 +447,6 @@ func isTimeout(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "timeout")
 }
 
-// awaitTurnEnd waits out an interrupted turn so the next turn/start is
-// accepted. The interrupt ack is not a turn-end signal, so poll the turn state
-// instead of trusting the response.
-func (p *codexProtocol) awaitTurnEnd(ctx context.Context, turnID string) {
-	deadline := time.Now().Add(codexInterruptWait)
-	for time.Now().Before(deadline) {
-		p.mu.Lock()
-		done := !p.turnActive || (turnID != "" && p.turnID != turnID)
-		p.mu.Unlock()
-		if done {
-			return
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
-}
-
 // EncodeInterrupt sends turn/interrupt for the live turn.
 func (p *codexProtocol) EncodeInterrupt() ([]byte, error) {
 	p.mu.Lock()
@@ -486,22 +463,6 @@ func (p *codexProtocol) EncodeInterrupt() ([]byte, error) {
 		"jsonrpc": jsonrpc.Version, "id": p.client.NextID(),
 		"method": "turn/interrupt", "params": params,
 	})
-}
-
-// interruptTurn sends the interrupt without waiting for its ack: the reply
-// arrives with no waiter and is ignored.
-func (p *codexProtocol) interruptTurn() error {
-	frame, err := p.EncodeInterrupt()
-	if err != nil {
-		return err
-	}
-	p.mu.Lock()
-	w := p.w
-	p.mu.Unlock()
-	if w == nil {
-		return errors.New("codex: not connected")
-	}
-	return w.Write(frame)
 }
 
 // EncodeDecision answers an approval request from the server.

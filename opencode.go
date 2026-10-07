@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/trebi-ai/agent-wire/internal/proc"
+	"github.com/trebi-ai/agent-wire/internal/wire"
 )
 
 // openCodeWire is one version of the OpenCode HTTP surface. The session
@@ -77,6 +78,8 @@ type openCodeBase struct {
 	live      bool
 	lastError string
 	onClose   []func()
+
+	out wire.Outbox
 }
 
 func newOpenCodeBase(rt *Runtime, srv *openCodeServer, id, dir string, w openCodeWire) *openCodeBase {
@@ -208,6 +211,9 @@ func (b *openCodeBase) finish(code *int, reason string) {
 		if code != nil {
 			ev.ExitCode = code
 		}
+		if dropped := b.out.Drop(); len(dropped) > 0 {
+			b.deliver([]Event{wire.DroppedEvent(dropped)})
+		}
 		b.deliver([]Event{ev})
 		close(b.pumpStop)
 		b.releaseServer()
@@ -255,6 +261,32 @@ func (b *openCodeBase) beginTurn() error {
 	b.sawResult = false
 	b.lastError = ""
 	return nil
+}
+
+// turnBusy reports whether a turn runs.
+func (b *openCodeBase) turnBusy() bool {
+	b.queueMu.Lock()
+	defer b.queueMu.Unlock()
+	return b.busy
+}
+
+// sendWith delivers p with the shared Send rules. OpenCode has no steer, so a
+// prompt during a turn waits for the turn to end.
+func (b *openCodeBase) sendWith(ctx context.Context, prompt func(context.Context, Prompt) error, p Prompt) (Delivery, error) {
+	return b.out.Send(ctx, wire.SendOps{Active: b.turnBusy, Prompt: prompt}, p)
+}
+
+// afterTurn sends the held prompts once the turn ended. It runs off the
+// shared event stream, because a prompt is an HTTP call.
+func (b *openCodeBase) afterTurn(prompt func(context.Context, Prompt) error) {
+	if !b.out.Pending() {
+		return
+	}
+	go func() {
+		if dropped := b.out.Flush(context.Background(), prompt); len(dropped) > 0 {
+			b.deliver([]Event{wire.DroppedEvent(dropped)})
+		}
+	}()
 }
 
 // endTurn closes the turn, on the terminal event or on a failed prompt call.
@@ -419,6 +451,11 @@ type openCodeSession struct {
 	partOwner map[string]string
 }
 
+// Send prompts, or holds p until the running turn ends.
+func (s *openCodeSession) Send(ctx context.Context, p Prompt) (Delivery, error) {
+	return s.sendWith(ctx, s.Prompt, p)
+}
+
 // Prompt starts a turn without waiting: prompt_async answers 204 and the turn
 // arrives on the event stream.
 // It returns ErrTurnActive while a turn runs.
@@ -523,6 +560,7 @@ func (s *openCodeSession) parse(typ string, props map[string]any) []Event {
 		s.busy = false
 		lastErr := s.lastError
 		s.queueMu.Unlock()
+		s.afterTurn(s.Prompt)
 		if lastErr != "" {
 			c := ClassifyFor(OpenCode, lastErr, 0)
 			return []Event{{Type: EventResult, Result: &Result{

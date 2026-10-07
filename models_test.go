@@ -494,6 +494,24 @@ func TestOpenCode2SetModelAndTurnActive(t *testing.T) {
 	if n := len(oc.promptBodies()); n != 1 {
 		t.Fatalf("prompt bodies after a refused prompt: %d", n)
 	}
+	events := coaTestWatch(t, sess.Events())
+	d, err := Send(context.Background(), sess, Prompt{Text: "three"})
+	if err != nil || d != DeliveryHeld {
+		t.Fatalf("send during a turn: %q %v, want held", d, err)
+	}
+	if n := len(oc.promptBodies()); n != 1 {
+		t.Fatalf("prompt bodies after a held send: %d", n)
+	}
+	oc.sse.push(t, "session.execution.succeeded", map[string]any{"sessionID": "s1"})
+	events.next(EventResult)
+	deadline := time.Now().Add(3 * time.Second)
+	for len(oc.promptBodies()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	bodies2 := oc.promptBodies()
+	if len(bodies2) != 2 || bodies2[1]["text"] != "three" {
+		t.Fatalf("prompt bodies after the result: %+v", bodies2)
+	}
 }
 
 // ACP.
@@ -687,4 +705,92 @@ func TestFakeModelsAndSteer(t *testing.T) {
 	if err := st.Steer(context.Background(), Prompt{Text: "late"}); !errors.Is(err, ErrNoActiveTurn) {
 		t.Fatalf("steer after the result: %v", err)
 	}
+}
+
+// mdTestSendScript runs two turns. The first turn reads one more line, so a
+// steer is visible. The second turn reports whether it got the joined prompt.
+const mdTestSendScript = `read -r a
+echo '{"type":"assistant","text":"turn one"}'
+read -r b
+case "$b" in *'"steer"'*) echo '{"type":"assistant","text":"steered"}';; esac
+echo '{"type":"result","subtype":"success"}'
+read -r c
+case "$c" in *'a\n\nb'*) echo '{"type":"assistant","text":"next: joined"}';; *) echo '{"type":"assistant","text":"next: other"}';; esac
+echo '{"type":"result","subtype":"success"}'
+read -r d || true`
+
+func TestSendStates(t *testing.T) {
+	rtTestSkipWithoutShell(t)
+	ctx := context.Background()
+	start := func(t *testing.T, d FakeDriver) (Session, *coaTestEvents) {
+		t.Helper()
+		rt := New(Options{})
+		rt.SetDriver(Fake, d)
+		sess, err := rt.Start(ctx, StartRequest{Harness: Fake, WorkingDir: t.TempDir()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = sess.Close(ctx) })
+		return sess, coaTestWatch(t, sess.Events())
+	}
+
+	t.Run("idle prompts and active steers", func(t *testing.T) {
+		sess, events := start(t, FakeDriver{Script: mdTestSendScript})
+		if d, err := Send(ctx, sess, Prompt{Text: "go"}); err != nil || d != DeliveryPrompted {
+			t.Fatalf("idle send: %q %v", d, err)
+		}
+		if d, err := Send(ctx, sess, Prompt{Text: "more"}); err != nil || d != DeliverySteered {
+			t.Fatalf("active send: %q %v", d, err)
+		}
+		events.nextWhere(func(e Event) bool { return e.Type == EventAssistant && e.Text == "steered" })
+		events.next(EventResult)
+	})
+
+	t.Run("refused steer holds until the result", func(t *testing.T) {
+		sess, events := start(t, FakeDriver{Script: mdTestSendScript, NoSteer: true})
+		if _, err := Send(ctx, sess, Prompt{Text: "go"}); err != nil {
+			t.Fatal(err)
+		}
+		if d, err := Send(ctx, sess, Prompt{Text: "a"}); err != nil || d != DeliveryHeld {
+			t.Fatalf("held send: %q %v", d, err)
+		}
+		if d, err := Send(ctx, sess, Prompt{Text: "b"}); err != nil || d != DeliveryHeld {
+			t.Fatalf("second held send: %q %v", d, err)
+		}
+		// The script reads one line in the turn; a blank steer stand-in
+		// keeps it moving, because a held prompt writes nothing.
+		ws := sess.(*fakeSession)
+		if err := ws.WriteFrame([]byte(`{"type":"noop"}`)); err != nil {
+			t.Fatal(err)
+		}
+		first := events.next(EventResult)
+		next := events.nextWhere(func(e Event) bool { return e.Type == EventAssistant && strings.HasPrefix(e.Text, "next:") })
+		if next.Text != "next: joined" {
+			t.Fatalf("held prompts were not joined into one turn: %q", next.Text)
+		}
+		second := events.next(EventResult)
+		if first.Turn != 1 || second.Turn != 2 {
+			t.Fatalf("turns: first %d second %d", first.Turn, second.Turn)
+		}
+	})
+
+	t.Run("exit drops held prompts", func(t *testing.T) {
+		script := `read -r a; echo '{"type":"assistant","text":"x"}'; read -r b; exit 0`
+		sess, events := start(t, FakeDriver{Script: script, NoSteer: true})
+		if _, err := Send(ctx, sess, Prompt{Text: "go"}); err != nil {
+			t.Fatal(err)
+		}
+		events.next(EventAssistant)
+		if d, err := Send(ctx, sess, Prompt{Text: "lost"}); err != nil || d != DeliveryHeld {
+			t.Fatalf("held send: %q %v", d, err)
+		}
+		if err := sess.(*fakeSession).WriteFrame([]byte(`{"type":"noop"}`)); err != nil {
+			t.Fatal(err)
+		}
+		dropped := events.nextWhere(func(e Event) bool { return e.Type == EventError && e.Code == CodeHeldPromptDropped })
+		if dropped.Text != "lost" {
+			t.Fatalf("dropped text: %q", dropped.Text)
+		}
+		events.next(EventExit)
+	})
 }

@@ -94,18 +94,8 @@ func (s *claudeSession) SetModel(ctx context.Context, model string) error {
 	return err
 }
 
-// Steer writes a user frame during the running turn. The CLI adds it to the
-// turn at the next tool boundary, and the turn ends with one result.
-func (s *claudeSession) Steer(_ context.Context, pr Prompt) error {
-	if !s.p.active() {
-		return ErrNoActiveTurn
-	}
-	frame, err := claudeUserFrame(pr)
-	if err != nil {
-		return err
-	}
-	return s.WriteFrame(frame)
-}
+// Steer adds input to the running turn.
+func (s *claudeSession) Steer(ctx context.Context, pr Prompt) error { return s.p.Steer(ctx, pr) }
 
 // claudeAliases are the model aliases the Claude Code docs list. The lister
 // returns them when the initialize reply has no model list.
@@ -222,6 +212,32 @@ func (p *claudeProtocol) active() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.turnActive
+}
+
+// TurnActive implements wire.TurnStater.
+func (p *claudeProtocol) TurnActive() bool { return p.active() }
+
+// ConcurrentPrompt implements wire.ConcurrentPrompter: the CLI queues a
+// second user frame during a turn.
+func (p *claudeProtocol) ConcurrentPrompt() bool { return true }
+
+// Steer writes a user frame during the running turn. The CLI adds it to the
+// turn at the next tool boundary, and the turn ends with one result.
+func (p *claudeProtocol) Steer(_ context.Context, pr Prompt) error {
+	if !p.active() {
+		return ErrNoActiveTurn
+	}
+	frame, err := claudeUserFrame(pr)
+	if err != nil {
+		return err
+	}
+	p.mu.Lock()
+	w := p.w
+	p.mu.Unlock()
+	if w == nil {
+		return ErrNoActiveTurn
+	}
+	return w.Write(frame)
 }
 
 func (p *claudeProtocol) sessionModels() []ModelInfo {

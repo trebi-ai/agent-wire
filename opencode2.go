@@ -188,6 +188,11 @@ type openCode2Session struct {
 	tools map[string]string
 }
 
+// Send prompts, or holds p until the running turn ends.
+func (s *openCode2Session) Send(ctx context.Context, p Prompt) (Delivery, error) {
+	return s.sendWith(ctx, s.Prompt, p)
+}
+
 // Prompt starts a turn without waiting: the prompt route answers with the
 // queued message and the turn arrives on the event stream. It returns
 // ErrTurnActive while a turn runs.
@@ -421,6 +426,7 @@ func (s *openCode2Session) parse(typ string, data map[string]any) []Event {
 		s.busy = false
 		lastErr := s.lastError
 		s.queueMu.Unlock()
+		s.afterTurn(s.Prompt)
 		if lastErr != "" {
 			c := ClassifyFor(OpenCode2, lastErr, 0)
 			return []Event{{Type: EventResult, Result: &Result{
@@ -443,6 +449,7 @@ func (s *openCode2Session) parse(typ string, data map[string]any) []Event {
 		}
 		s.queueMu.Unlock()
 		if typ == "session.execution.failed" {
+			s.afterTurn(s.Prompt)
 			return []Event{
 				{Type: EventError, Error: text, Code: c.Code, EndReason: string(c.Class)},
 				{Type: EventResult, Result: &Result{

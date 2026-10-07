@@ -101,7 +101,7 @@ func (s *session) Prompt(ctx context.Context, p agentwire.Prompt) error {
 	s.mu.Lock()
 	if s.turnStop != nil {
 		s.mu.Unlock()
-		return fmt.Errorf("native session is still running the previous turn")
+		return fmt.Errorf("native session is still running the previous turn: %w", agentwire.ErrTurnActive)
 	}
 	s.turnNo++
 	turn := s.turnNo

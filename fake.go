@@ -47,6 +47,9 @@ type FakeDriver struct {
 	// ModelList is the list Runtime.Models returns. Empty reads
 	// FakeModelsEnv.
 	ModelList []ModelInfo
+	// NoSteer makes every steer fail with ErrUnsupported, so Send holds a
+	// prompt during a turn and sends it after the result.
+	NoSteer bool
 }
 
 // Name implements Driver.
@@ -96,7 +99,7 @@ func (f FakeDriver) start(ctx context.Context, req StartRequest) (Session, error
 	if err != nil {
 		return nil, err
 	}
-	proto := &fakeProtocol{}
+	proto := &fakeProtocol{noSteer: f.NoSteer}
 	s, err := wire.Start(ctx, string(Fake), p, proto, wire.Config{})
 	if err != nil {
 		return nil, err
@@ -130,27 +133,45 @@ func (s *fakeSession) SetModel(_ context.Context, model string) error {
 }
 
 // Steer writes a steer line to the script while a turn runs.
-func (s *fakeSession) Steer(_ context.Context, pr Prompt) error {
-	if !s.p.active() {
-		return ErrNoActiveTurn
-	}
-	frame, err := json.Marshal(map[string]any{"type": "steer", "text": pr.Text})
-	if err != nil {
-		return err
-	}
-	return s.WriteFrame(frame)
-}
+func (s *fakeSession) Steer(ctx context.Context, pr Prompt) error { return s.p.Steer(ctx, pr) }
 
 // fakeProtocol parses the fake NDJSON vocabulary.
 type fakeProtocol struct {
 	mu         sync.Mutex
+	w          *wire.Writer
 	turnActive bool
+	// noSteer refuses every steer, so Send holds the prompt.
+	noSteer bool
 }
 
 func (p *fakeProtocol) active() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.turnActive
+}
+
+// TurnActive implements wire.TurnStater.
+func (p *fakeProtocol) TurnActive() bool { return p.active() }
+
+// Steer writes a steer line to the script while a turn runs.
+func (p *fakeProtocol) Steer(_ context.Context, pr Prompt) error {
+	if p.noSteer {
+		return fmt.Errorf("%w: fake steer is off", ErrUnsupported)
+	}
+	if !p.active() {
+		return ErrNoActiveTurn
+	}
+	frame, err := wire.JSONLine(map[string]any{"type": "steer", "text": pr.Text})
+	if err != nil {
+		return err
+	}
+	return p.w.Write(frame)
+}
+
+func (p *fakeProtocol) SetWriter(w *wire.Writer) {
+	p.mu.Lock()
+	p.w = w
+	p.mu.Unlock()
 }
 
 func (*fakeProtocol) Handshake(context.Context, *wire.Writer) ([]Event, error) { return nil, nil }

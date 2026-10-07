@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.5.0] - 2026-10-07
+
+### Added
+
+- `Send(ctx, session, prompt) (Delivery, error)` delivers a prompt in one call. It steers the running turn, else prompts, else holds the prompt until the turn ends. `Delivery` is `steered`, `prompted`, or `held`.
+- `Sender` is the session capability behind `Send`. Every wire session (Claude, Codex, pi, ACP, fake) and both OpenCode sessions implement it.
+- A held prompt goes out at the result of the turn. The session joins all held prompts with a blank line into one prompt with `Kind: "followup"`. When the process exits first, the session emits one `EventError` with code `held_prompt_dropped` (`CodeHeldPromptDropped`), and `Text` holds the dropped prompts.
+- `FakeDriver.NoSteer` refuses every steer, so a test can run the held path.
+
+### Changed
+
+- `Prompt` during a turn returns `ErrTurnActive` on Codex, ACP (Copilot, Cursor, Gemini), pi, fake, and native. Claude still takes a second prompt during a turn, because the CLI queues it.
+- Codex: `Prompt` during a turn no longer steers, and no longer interrupts the turn when the steer fails. Before, a failed steer lost the running turn. Use `Send`.
+- ACP: a second prompt during a turn no longer overwrites the id of the first, so the first response is no longer dropped.
+
 ## [v0.4.1] - 2026-10-02
 
 ### Fixed

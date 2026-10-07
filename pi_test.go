@@ -353,6 +353,7 @@ func TestPiInstructionsFirstPromptOnly(t *testing.T) {
 	if first != want {
 		t.Fatalf("first prompt = %q want %q", first, want)
 	}
+	proto.parseAgentEnd()
 	if second := cpTestPiPromptMessage(t, proto, "two"); second != "two" {
 		t.Fatalf("second prompt = %q", second)
 	}
