@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -97,59 +98,87 @@ func (s *codexSession) Steer(ctx context.Context, pr Prompt) error { return s.p.
 // Models implements ModelLister. It starts `codex app-server`, reads every
 // page of model/list, and kills the child. Hidden models are left out.
 func (d codexDriver) Models(ctx context.Context, q ModelQuery) ([]ModelInfo, error) {
-	dir, done, err := probeDir(q)
+	var models []ModelInfo
+	err := d.probe(ctx, q, modelProbeTimeout, func(ctx context.Context, client *jsonrpc.Client) error {
+		cursor := ""
+		for range 50 {
+			params := map[string]any{}
+			if cursor != "" {
+				params["cursor"] = cursor
+			}
+			raw, err := client.Call(ctx, "model/list", params, modelProbeTimeout)
+			if err != nil {
+				return err
+			}
+			page, next, err := codexModelPage(raw)
+			if err != nil {
+				return err
+			}
+			models = append(models, page...)
+			if next == "" {
+				return nil
+			}
+			cursor = next
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
+	}
+	return models, nil
+}
+
+// ReadLimits implements LimitsReader. It starts `codex app-server`, reads
+// account/rateLimits/read, and kills the child.
+func (d codexDriver) ReadLimits(ctx context.Context, q ModelQuery) (Limits, error) {
+	var out Limits
+	err := d.probe(ctx, q, limitsProbeTimeout, func(ctx context.Context, client *jsonrpc.Client) error {
+		raw, err := client.Call(ctx, "account/rateLimits/read", map[string]any{"excludeResetCreditDetails": true}, limitsProbeTimeout)
+		if err != nil {
+			return err
+		}
+		if l := codexLimits(raw); l != nil {
+			out = *l
+		}
+		return nil
+	})
+	if err != nil {
+		return Limits{}, err
+	}
+	return out, nil
+}
+
+// probe starts a short-lived `codex app-server`, runs the handshake, then fn.
+func (d codexDriver) probe(ctx context.Context, q ModelQuery, timeout time.Duration, fn func(context.Context, *jsonrpc.Client) error) error {
+	dir, done, err := probeDir(q)
+	if err != nil {
+		return err
 	}
 	defer done()
 	req := probeRequest(Codex, q, dir)
 	l, err := d.rt.prepare(ctx, &req, false)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer l.cleanup()
-	client := jsonrpc.New(nil, modelProbeTimeout)
-	var models []ModelInfo
+	client := jsonrpc.New(nil, timeout)
 	a := probeAdapter{
 		run: func(ctx context.Context, w *wire.Writer) error {
 			client.SetWrite(w.Write)
 			if _, err := client.Call(ctx, "initialize", map[string]any{
 				"clientInfo": map[string]any{"name": d.rt.clientName(), "title": d.rt.clientName(), "version": d.rt.opts.ClientVersion},
-			}, modelProbeTimeout); err != nil {
+			}, timeout); err != nil {
 				return err
 			}
 			if err := client.Notify("initialized", map[string]any{}); err != nil {
 				return err
 			}
-			cursor := ""
-			for range 50 {
-				params := map[string]any{}
-				if cursor != "" {
-					params["cursor"] = cursor
-				}
-				raw, err := client.Call(ctx, "model/list", params, modelProbeTimeout)
-				if err != nil {
-					return err
-				}
-				page, next, err := codexModelPage(raw)
-				if err != nil {
-					return err
-				}
-				models = append(models, page...)
-				if next == "" {
-					return nil
-				}
-				cursor = next
-			}
-			return nil
+			return fn(ctx, client)
 		},
 		parse: func(line []byte) { client.Handle(line) },
 	}
 	args := append(append([]string{}, l.args...), "app-server")
-	if err := d.rt.runProbe(ctx, Codex, l.bin, args, dir, l.env, a); err != nil {
-		return nil, err
-	}
-	return models, nil
+	return d.rt.runProbe(ctx, Codex, l.bin, args, dir, l.env, a)
 }
 
 // codexModelPage maps one model/list response and returns the next cursor.
@@ -218,6 +247,9 @@ type codexProtocol struct {
 	// approvals maps a server request id to its method, so a later decision
 	// knows which reply body to render.
 	approvals map[string]string
+	// limitsReq is the id of the account/rateLimits/read request. Its error
+	// reply is dropped: an API-key login has no plan limits.
+	limitsReq string
 
 	tempDir string
 }
@@ -307,6 +339,7 @@ func (p *codexProtocol) Handshake(ctx context.Context, _ *wire.Writer) ([]Event,
 	if err := json.Unmarshal(res, &payload); err != nil {
 		return nil, fmt.Errorf("codex %s: decode response: %w", method, err)
 	}
+	p.requestLimits()
 	if id := codexThreadID(payload); id != "" {
 		p.mu.Lock()
 		p.threadID = id
@@ -314,6 +347,37 @@ func (p *codexProtocol) Handshake(ctx context.Context, _ *wire.Writer) ([]Event,
 		return []Event{{Type: EventInit, SessionID: id}}, nil
 	}
 	return nil, nil
+}
+
+// requestLimits sends account/rateLimits/read once. Parse maps the reply.
+func (p *codexProtocol) requestLimits() {
+	id, err := p.client.Request("account/rateLimits/read", map[string]any{"excludeResetCreditDetails": true})
+	if err != nil {
+		return
+	}
+	p.mu.Lock()
+	p.limitsReq = id.String()
+	p.mu.Unlock()
+}
+
+// limitsReply reports whether msg answers the limits request, and maps it.
+func (p *codexProtocol) limitsReply(msg jsonrpc.Message) ([]Event, bool) {
+	p.mu.Lock()
+	match := p.limitsReq != "" && msg.ID.String() == p.limitsReq
+	if match {
+		p.limitsReq = ""
+	}
+	p.mu.Unlock()
+	if !match {
+		return nil, false
+	}
+	if msg.Err != nil {
+		return nil, true
+	}
+	if l := codexLimits(msg.Result); l != nil {
+		return []Event{{Type: EventLimits, Limits: l}}, true
+	}
+	return nil, true
 }
 
 // EncodePrompt is the fire-and-forget shape. The live path goes through
@@ -506,6 +570,9 @@ func (p *codexProtocol) Parse(line []byte) []Event {
 	kind, msg := p.client.Handle(line)
 	switch kind {
 	case jsonrpc.KindResponse:
+		if evs, ok := p.limitsReply(msg); ok {
+			return evs
+		}
 		if msg.Err != nil {
 			return []Event{{Type: EventError, Error: msg.Err.Error(), Code: "rpc_error", EndReason: string(FailProtocol)}}
 		}
@@ -551,6 +618,10 @@ func (p *codexProtocol) Parse(line []byte) []Event {
 		p.noteTurnUsage(str(params["turnId"]), last, total)
 		if total != nil {
 			return []Event{{Type: EventUsage, Usage: total}}
+		}
+	case "account/rateLimits/updated":
+		if l := codexLimits(msg.Params); l != nil {
+			return []Event{{Type: EventLimits, Limits: l}}
 		}
 	case "error":
 		text := firstNonEmpty(str(params["message"]), fmt.Sprint(params["error"]))
@@ -945,3 +1016,86 @@ var (
 	_ ModelSetter = (*codexSession)(nil)
 	_ Steerer     = (*codexSession)(nil)
 )
+
+// codexRateLimitSnapshot is the app-server RateLimitSnapshot.
+type codexRateLimitSnapshot struct {
+	LimitID              string                `json:"limitId"`
+	Primary              *codexRateLimitWindow `json:"primary"`
+	Secondary            *codexRateLimitWindow `json:"secondary"`
+	PlanType             string                `json:"planType"`
+	RateLimitReachedType string                `json:"rateLimitReachedType"`
+}
+
+// codexRateLimitWindow is the app-server RateLimitWindow. ResetsAt is epoch
+// seconds.
+type codexRateLimitWindow struct {
+	UsedPercent        float64 `json:"usedPercent"`
+	WindowDurationMins *int    `json:"windowDurationMins"`
+	ResetsAt           *int64  `json:"resetsAt"`
+}
+
+// codexLimits maps the body of account/rateLimits/read or of the
+// account/rateLimits/updated notification. Windows are keyed by length,
+// because primary is not always the 5-hour window.
+func codexLimits(raw json.RawMessage) *Limits {
+	var body struct {
+		RateLimits          *codexRateLimitSnapshot           `json:"rateLimits"`
+		RateLimitsByLimitID map[string]codexRateLimitSnapshot `json:"rateLimitsByLimitId"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil
+	}
+	snaps := []codexRateLimitSnapshot{}
+	if body.RateLimits != nil {
+		snaps = append(snaps, *body.RateLimits)
+	}
+	ids := make([]string, 0, len(body.RateLimitsByLimitID))
+	for id := range body.RateLimitsByLimitID {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		snap := body.RateLimitsByLimitID[id]
+		if snap.LimitID == "" {
+			snap.LimitID = id
+		}
+		snaps = append(snaps, snap)
+	}
+	l := &Limits{}
+	seen := map[string]bool{}
+	for _, snap := range snaps {
+		if l.Plan == "" {
+			l.Plan = snap.PlanType
+		}
+		if snap.RateLimitReachedType != "" {
+			l.Rejected = true
+		}
+		scope := snap.LimitID
+		if scope == "codex" {
+			scope = ""
+		}
+		for _, w := range []*codexRateLimitWindow{snap.Primary, snap.Secondary} {
+			if w == nil {
+				continue
+			}
+			lw := LimitWindow{Scope: scope, UsedPercent: w.UsedPercent}
+			if w.WindowDurationMins != nil {
+				lw.Minutes = *w.WindowDurationMins
+			}
+			lw.Key = WindowKey(lw.Minutes)
+			if w.ResetsAt != nil && *w.ResetsAt > 0 {
+				lw.ResetsAt = time.Unix(*w.ResetsAt, 0).UTC()
+			}
+			k := fmt.Sprintf("%s|%s|%d", lw.Key, lw.Scope, lw.Minutes)
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+			l.Windows = append(l.Windows, lw)
+		}
+	}
+	if len(l.Windows) == 0 && !l.Rejected && l.Plan == "" {
+		return nil
+	}
+	return l
+}

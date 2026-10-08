@@ -33,6 +33,8 @@ const (
 	EventStatus EventType = "status"
 	// EventExit reports the child process ended. It is always the last event.
 	EventExit EventType = "exit"
+	// EventLimits carries the plan limit windows of the account.
+	EventLimits EventType = "limits"
 )
 
 // SessionStatus is the activity view of a session.
@@ -78,6 +80,7 @@ type Event struct {
 	Permission *Permission
 	Result     *Result
 	Usage      *Usage
+	Limits     *Limits
 	// Status is the tracker hint of a status event.
 	Status SessionStatus
 
@@ -137,6 +140,53 @@ type Usage struct {
 	CacheCreation int64
 	Model         string
 	CostUSD       float64
+}
+
+// Window keys of a LimitWindow.
+const (
+	WindowFiveHour = "five_hour"
+	WindowDaily    = "daily"
+	WindowWeekly   = "weekly"
+	WindowMonthly  = "monthly"
+	WindowCustom   = "custom"
+)
+
+// LimitWindow is the use of one plan limit window.
+type LimitWindow struct {
+	// Key is five_hour, daily, weekly, monthly, or custom.
+	Key string
+	// Scope narrows the window, for example "opus" or a Codex limit id.
+	Scope string
+	// Minutes is the window length. It is 0 when not known.
+	Minutes int
+	// UsedPercent is 0–100.
+	UsedPercent float64
+	// ResetsAt is zero when not known.
+	ResetsAt time.Time
+}
+
+// Limits is the plan limit state of the account behind a session.
+type Limits struct {
+	// Plan is the vendor plan name, for example "plus". Empty when not known.
+	Plan string
+	// Rejected reports that the harness refused the last request on a limit.
+	Rejected bool
+	Windows  []LimitWindow
+}
+
+// WindowKey maps a window length in minutes to its key.
+func WindowKey(minutes int) string {
+	switch minutes {
+	case 300:
+		return WindowFiveHour
+	case 1440:
+		return WindowDaily
+	case 10080:
+		return WindowWeekly
+	case 43200:
+		return WindowMonthly
+	}
+	return WindowCustom
 }
 
 // Result is the terminal turn payload. Subtype and IsError come from the

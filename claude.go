@@ -731,16 +731,71 @@ func statusText(status int) string {
 }
 
 func (p *claudeProtocol) parseRateLimit(m map[string]any) []Event {
-	status := str(m["status"])
-	if status == "rejected" || status == "blocked" {
-		text := str(m["message"])
+	info, _ := m["rate_limit_info"].(map[string]any)
+	if info == nil {
+		info = m
+	}
+	status := str(info["status"])
+	rejected := status == "rejected" || status == "blocked"
+	var out []Event
+	if l := claudeLimits(info, rejected); l != nil {
+		out = append(out, Event{Type: EventLimits, Limits: l})
+	}
+	if rejected {
+		text := firstNonEmpty(str(info["message"]), str(m["message"]))
 		if text == "" {
 			text = "claude rate limit rejected"
 		}
 		c := ClassifyFor(Claude, text, 0)
-		return []Event{{Type: EventError, Error: text, Code: c.Code, EndReason: string(c.Class)}}
+		out = append(out, Event{Type: EventError, Error: text, Code: c.Code, EndReason: string(c.Class)})
 	}
-	return []Event{{Type: EventStatus, Status: StatusRunning, Text: "rate_limit:" + status}}
+	if len(out) == 0 {
+		out = append(out, Event{Type: EventStatus, Status: StatusRunning, Text: "rate_limit:" + status})
+	}
+	return out
+}
+
+// claudeLimits maps the unifiedWindows of a rate_limit_info. Utilization is a
+// fraction and resetsAt is epoch seconds. It returns nil when the frame has no
+// window and no rejection.
+func claudeLimits(info map[string]any, rejected bool) *Limits {
+	windows, _ := info["unifiedWindows"].(map[string]any)
+	l := &Limits{Rejected: rejected}
+	names := make([]string, 0, len(windows))
+	for name := range windows {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		w, _ := windows[name].(map[string]any)
+		u, ok := w["utilization"].(float64)
+		if !ok {
+			continue
+		}
+		lw := claudeWindow(name)
+		lw.UsedPercent = u * 100
+		if at, ok := w["resetsAt"].(float64); ok && at > 0 {
+			lw.ResetsAt = time.Unix(int64(at), 0).UTC()
+		}
+		l.Windows = append(l.Windows, lw)
+	}
+	if len(l.Windows) == 0 && !rejected {
+		return nil
+	}
+	return l
+}
+
+// claudeWindow maps a unifiedWindows key such as "seven_day_opus".
+func claudeWindow(name string) LimitWindow {
+	switch {
+	case name == "five_hour":
+		return LimitWindow{Key: WindowFiveHour, Minutes: 300}
+	case name == "seven_day":
+		return LimitWindow{Key: WindowWeekly, Minutes: 10080}
+	case strings.HasPrefix(name, "seven_day_"):
+		return LimitWindow{Key: WindowWeekly, Scope: strings.TrimPrefix(name, "seven_day_"), Minutes: 10080}
+	}
+	return LimitWindow{Key: WindowCustom, Scope: name}
 }
 
 // parseControlRequest maps a permission request, or answers an unimplemented

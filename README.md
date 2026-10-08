@@ -105,6 +105,15 @@ func main() {
 
 A consumer MUST drain `Session.Events()` until the channel closes, or call `Session.Close`. `EventExit` is always the last event, and it is delivered even after `Close`. A consumer that stops reading without closing leaks the framing goroutine.
 
+## Plan limits
+
+A session emits `EventLimits` when the harness reports the plan limits of the account. `Event.Limits` is a `*Limits`: `Plan`, `Rejected`, and `Windows`. Each `LimitWindow` has `Key` (`five_hour`, `daily`, `weekly`, `monthly`, or `custom`), `Scope` (for example `opus` or a Codex limit id), `Minutes`, `UsedPercent` (0–100), and `ResetsAt` (zero when not known). `WindowKey(minutes)` maps a window length to its key. A window is identified by its length, not by its position in the vendor frame.
+
+- Claude: each `rate_limit_event` frame on a stream-json run. A rejected frame also emits `EventError` with a `limit` end reason.
+- Codex: `account/rateLimits/read` after the handshake, and each `account/rateLimits/updated` notification. An error reply (an API-key login) emits nothing.
+
+`Runtime.Limits(ctx, harness, ModelQuery)` reads the limits without a live session. It starts a short-lived child, never caches, and times out after 15 seconds. Codex implements it through the optional driver interface `LimitsReader`. Other harnesses return `ErrUnsupported`.
+
 ## Models
 
 `Runtime.Models(ctx, harness, ModelQuery)` lists the models of one harness as `[]ModelInfo` (`ID`, `Name`, `Description`, `Default`). `ID` is the value that `StartRequest.Model` and `SetModel` take. The first call can start a short-lived vendor child (Claude `initialize`, Codex `model/list`, the OpenCode server, ACP `session/new`, pi `get_available_models`). The child sends no prompt and uses no model turn.

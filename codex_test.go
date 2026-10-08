@@ -64,6 +64,8 @@ type coaTestPeer struct {
 
 	mu      sync.Mutex
 	handler func(*coaTestPeer, coaTestFrame)
+	// writeMu orders pushes. It is not mu, so a blocked push never stops loop.
+	writeMu sync.Mutex
 }
 
 // coaTestNewPeer starts a scripted peer. The handler runs on the reader
@@ -122,8 +124,8 @@ func (p *coaTestPeer) push(v any) {
 			return
 		}
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.writeMu.Lock()
+	defer p.writeMu.Unlock()
 	if _, err := p.outW.Write(append(b, '\n')); err != nil {
 		p.t.Errorf("coaTestPeer: write: %v", err)
 	}
@@ -175,12 +177,6 @@ func (p *coaTestPeer) waitMethod(method string) coaTestFrame {
 func (p *coaTestPeer) waitReply() coaTestFrame {
 	p.t.Helper()
 	return p.wait(func(f coaTestFrame) bool { return f.has("result") || f.has("error") })
-}
-
-// waitFrame returns the next frame.
-func (p *coaTestPeer) waitFrame() coaTestFrame {
-	p.t.Helper()
-	return p.wait(func(coaTestFrame) bool { return true })
 }
 
 // drain drops the frames received so far. The handshake frames are not part of
@@ -596,7 +592,7 @@ func TestCodexUnsupportedRequest(t *testing.T) {
 		ID    json.Number    `json:"id"`
 		Error map[string]any `json:"error"`
 	}
-	reply := peer.waitFrame()
+	reply := peer.waitReply()
 	if err := json.Unmarshal(reply.raw, &decoded); err != nil {
 		t.Fatalf("refusal frame: %s (%v)", reply.raw, err)
 	}
@@ -704,5 +700,80 @@ func TestCodexEffortFallback(t *testing.T) {
 	}
 	if got := starts.Load(); got != 2 {
 		t.Fatalf("turn/start count: %d", got)
+	}
+}
+
+// coaTestCodexLimits is an account/rateLimits/read body with a weekly
+// primary window, to check that windows are keyed by length.
+func coaTestCodexLimits() map[string]any {
+	return map[string]any{
+		"rateLimits": map[string]any{
+			"limitId":  "codex",
+			"primary":  map[string]any{"usedPercent": 25, "windowDurationMins": 10080, "resetsAt": 1789884000},
+			"planType": "plus",
+		},
+		"rateLimitsByLimitId": map[string]any{
+			"codex": map[string]any{
+				"limitId": "codex",
+				"primary": map[string]any{"usedPercent": 25, "windowDurationMins": 10080, "resetsAt": 1789884000},
+			},
+			"gpt-5-pro": map[string]any{
+				"primary":   map[string]any{"usedPercent": 60, "windowDurationMins": 300},
+				"secondary": nil,
+			},
+		},
+	}
+}
+
+// TestCodexLimitsRead reads the limits after the handshake.
+func TestCodexLimitsRead(t *testing.T) {
+	_, s, _ := coaTestStartCodex(t, StartRequest{}, func(p *coaTestPeer, m coaTestFrame) {
+		if m.method() == "account/rateLimits/read" {
+			p.reply(m.m["id"], coaTestCodexLimits())
+			return
+		}
+		coaTestCodexHandshake(p, m)
+	})
+	events := coaTestWatch(t, s.Events())
+	ev := events.next(EventLimits)
+	l := ev.Limits
+	if l == nil || l.Plan != "plus" || l.Rejected || len(l.Windows) != 2 {
+		t.Fatalf("limits: %+v", l)
+	}
+	w := l.Windows[0]
+	if w.Key != WindowWeekly || w.Scope != "" || w.Minutes != 10080 || w.UsedPercent != 25 || !w.ResetsAt.Equal(time.Unix(1789884000, 0)) {
+		t.Fatalf("weekly window: %+v", w)
+	}
+	w = l.Windows[1]
+	if w.Key != WindowFiveHour || w.Scope != "gpt-5-pro" || w.UsedPercent != 60 || !w.ResetsAt.IsZero() {
+		t.Fatalf("scoped window: %+v", w)
+	}
+}
+
+// TestCodexLimitsReadError drops the error reply of an API-key login.
+func TestCodexLimitsReadError(t *testing.T) {
+	_, s, _ := coaTestStartCodex(t, StartRequest{}, func(p *coaTestPeer, m coaTestFrame) {
+		if m.method() == "account/rateLimits/read" {
+			p.replyErr(m.m["id"], -32600, "chatgpt login required")
+			p.notify("account/rateLimits/updated", map[string]any{"rateLimits": map[string]any{
+				"primary":              map[string]any{"usedPercent": 100, "windowDurationMins": 300},
+				"rateLimitReachedType": "primary",
+			}})
+			return
+		}
+		coaTestCodexHandshake(p, m)
+	})
+	events := coaTestWatch(t, s.Events())
+	ev := events.nextWhere(func(e Event) bool { return e.Type == EventLimits || e.Type == EventError })
+	if ev.Type != EventLimits || !ev.Limits.Rejected || ev.Limits.Windows[0].Key != WindowFiveHour {
+		t.Fatalf("event after error reply: %+v", ev)
+	}
+}
+
+func TestWindowKey(t *testing.T) {
+	for minutes, want := range map[int]string{300: WindowFiveHour, 1440: WindowDaily, 10080: WindowWeekly, 43200: WindowMonthly, 0: WindowCustom, 120: WindowCustom} {
+		if got := WindowKey(minutes); got != want {
+			t.Fatalf("WindowKey(%d) = %q, want %q", minutes, got, want)
+		}
 	}
 }

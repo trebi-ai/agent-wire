@@ -247,6 +247,17 @@ func (c *Client) Notify(method string, params any) error {
 	return c.send(frame)
 }
 
+// Request sends a request with no waiter and returns its id. The caller
+// matches the response in its own Handle loop.
+func (c *Client) Request(method string, params any) (ID, error) {
+	id := c.NextID()
+	frame := map[string]any{"jsonrpc": Version, "id": id, "method": method}
+	if params != nil {
+		frame["params"] = params
+	}
+	return id, c.send(frame)
+}
+
 // Call sends a request and waits for its response. The waiter is always
 // removed: on reply, on timeout, on context end, and on send error.
 func (c *Client) Call(ctx context.Context, method string, params any, timeout time.Duration) (json.RawMessage, error) {

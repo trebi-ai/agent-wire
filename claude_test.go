@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -935,5 +936,73 @@ func TestClaudeExitCancelsOpenTools(t *testing.T) {
 	}
 	if evs[1].Type != EventError {
 		t.Fatalf("second exit event = %+v", evs[1])
+	}
+}
+
+// TestClaudeRateLimitWindows maps the unifiedWindows of a recorded frame.
+func TestClaudeRateLimitWindows(t *testing.T) {
+	proto := cpTestClaudeProto(t, PermissionPolicy{})
+	evs := cpTestClaudeParseFile(t, proto, "testdata/claude/0.3.273-2.1.267/basic.ndjson")
+	ev := cpTestFirstEvent(evs, EventLimits)
+	if ev == nil || ev.Limits == nil {
+		t.Fatalf("no limits event: %+v", evs)
+	}
+	want := []LimitWindow{
+		{Key: WindowFiveHour, Minutes: 300, UsedPercent: 11, ResetsAt: time.Unix(1789573800, 0).UTC()},
+		{Key: WindowWeekly, Minutes: 10080, UsedPercent: 44, ResetsAt: time.Unix(1789884000, 0).UTC()},
+	}
+	cpTestLimitWindows(t, ev.Limits.Windows, want)
+	if ev.Limits.Rejected {
+		t.Fatalf("allowed frame is rejected: %+v", ev.Limits)
+	}
+	if got := cpTestCountEvents(evs, EventError); got != 0 {
+		t.Fatalf("error events = %d, want 0", got)
+	}
+}
+
+// TestClaudeRateLimitRejected emits the limits and a classified error.
+func TestClaudeRateLimitRejected(t *testing.T) {
+	proto := cpTestClaudeProto(t, PermissionPolicy{})
+	evs := cpTestClaudeParseFile(t, proto, "testdata/claude/rate_limit_rejected.ndjson")
+	ev := cpTestFirstEvent(evs, EventLimits)
+	if ev == nil || !ev.Limits.Rejected {
+		t.Fatalf("no rejected limits event: %+v", evs)
+	}
+	cpTestLimitWindows(t, ev.Limits.Windows, []LimitWindow{
+		{Key: WindowFiveHour, Minutes: 300, UsedPercent: 100, ResetsAt: time.Unix(1789573800, 0).UTC()},
+		{Key: WindowWeekly, Minutes: 10080, UsedPercent: 62, ResetsAt: time.Unix(1789884000, 0).UTC()},
+		{Key: WindowWeekly, Scope: "opus", Minutes: 10080, UsedPercent: 30, ResetsAt: time.Unix(1789884000, 0).UTC()},
+	})
+	errEv := cpTestFirstEvent(evs, EventError)
+	if errEv == nil || errEv.EndReason != "limit" {
+		t.Fatalf("rejected frame error: %+v", errEv)
+	}
+}
+
+// TestClaudeRateLimitNoWindows keeps a rejection without windows.
+func TestClaudeRateLimitNoWindows(t *testing.T) {
+	proto := cpTestClaudeProto(t, PermissionPolicy{})
+	evs := proto.Parse([]byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":1789573800}}`))
+	ev := cpTestFirstEvent(evs, EventLimits)
+	if ev == nil || !ev.Limits.Rejected || len(ev.Limits.Windows) != 0 {
+		t.Fatalf("limits event: %+v", evs)
+	}
+	evs = proto.Parse([]byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}`))
+	if cpTestFirstEvent(evs, EventLimits) != nil || cpTestFirstEvent(evs, EventStatus) == nil {
+		t.Fatalf("allowed frame without windows: %+v", evs)
+	}
+}
+
+// cpTestLimitWindows compares windows with a tolerance on the percent.
+func cpTestLimitWindows(t *testing.T, got, want []LimitWindow) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("windows = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		g, w := got[i], want[i]
+		if g.Key != w.Key || g.Scope != w.Scope || g.Minutes != w.Minutes || !g.ResetsAt.Equal(w.ResetsAt) || math.Abs(g.UsedPercent-w.UsedPercent) > 1e-9 {
+			t.Fatalf("window %d = %+v, want %+v", i, g, w)
+		}
 	}
 }

@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.6.0] - 2026-10-08
+
+### Added
+
+- `EventLimits` carries the plan limits of the account in `Event.Limits` (`*Limits`: `Plan`, `Rejected`, `Windows []LimitWindow`). A `LimitWindow` has `Key`, `Scope`, `Minutes`, `UsedPercent` (0–100), and `ResetsAt`. `WindowKey(minutes)` maps a window length to `five_hour`, `daily`, `weekly`, `monthly`, or `custom` (constants `WindowFiveHour` … `WindowCustom`).
+- Claude: each `rate_limit_event` emits `EventLimits` with one window per entry of `unifiedWindows`. `seven_day_<model>` becomes a `weekly` window with that scope.
+- Codex: the session sends `account/rateLimits/read` after the handshake and maps the reply and each `account/rateLimits/updated` notification to `EventLimits`. An error reply emits nothing.
+- `Runtime.Limits(ctx, harness, ModelQuery) (Limits, error)` reads the limits without a live session. `LimitsReader` is the optional driver interface behind it. Codex implements it.
+
+### Fixed
+
+- Claude: `rate_limit_event` read the top-level `status`, but the CLI nests it in `rate_limit_info`. A rejected limit now emits `EventError`.
+
 ## [v0.5.0] - 2026-10-07
 
 ### Added

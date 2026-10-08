@@ -29,6 +29,15 @@ type Usage = wire.Usage
 // Result is the terminal turn payload.
 type Result = wire.Result
 
+// Limits is the plan limit state of the account behind a session.
+type Limits = wire.Limits
+
+// LimitWindow is the use of one plan limit window.
+type LimitWindow = wire.LimitWindow
+
+// WindowKey maps a window length in minutes to its key.
+func WindowKey(minutes int) string { return wire.WindowKey(minutes) }
+
 // Prompt is one user turn written to a live session.
 type Prompt = wire.Prompt
 
@@ -51,6 +60,16 @@ const (
 	EventUsage      = wire.EventUsage
 	EventStatus     = wire.EventStatus
 	EventExit       = wire.EventExit
+	EventLimits     = wire.EventLimits
+)
+
+// Window keys.
+const (
+	WindowFiveHour = wire.WindowFiveHour
+	WindowDaily    = wire.WindowDaily
+	WindowWeekly   = wire.WindowWeekly
+	WindowMonthly  = wire.WindowMonthly
+	WindowCustom   = wire.WindowCustom
 )
 
 // Session statuses.
