@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.6.1] - 2026-10-12
+
+### Fixed
+
+- OpenCode 2: the readiness check uses `GET /api/info`. OpenCode 2.0.26 removed `/api/health`, so every `opencode2` launch failed with `opencode serve: health timeout`.
+- OpenCode: the `opencode` harness reads the binary version. A 2.x binary runs on the OpenCode 2 wire for sessions and models. Before, it used the 1.x routes, which 2.x does not serve.
+- OpenCode: a server that answers the readiness path with 404 or an HTML page fails at once with a wrong wire error. Before, the launch waited 30 seconds three times.
+
 ## [v0.6.0] - 2026-10-08
 
 ### Added

@@ -20,8 +20,16 @@ type openCode2 struct{}
 
 func (openCode2) harness() Harness   { return OpenCode2 }
 func (openCode2) prefix() string     { return "/api" }
-func (openCode2) healthPath() string { return "/api/health" }
+func (openCode2) healthPath() string { return "/api/info" }
 func (openCode2) eventPath() string  { return "/api/event" }
+
+// ready reads GET /api/info: a server that names its version is up.
+func (openCode2) ready(body []byte) bool {
+	var info struct {
+		Version string `json:"version"`
+	}
+	return json.Unmarshal(body, &info) == nil && info.Version != ""
+}
 
 // eventScoped is false: V2 streams every location on one connection.
 func (openCode2) eventScoped() bool { return false }
@@ -104,6 +112,11 @@ func (d openCode2Driver) start(ctx context.Context, req StartRequest, resume boo
 	if err != nil {
 		return nil, err
 	}
+	return d.open(ctx, req, l)
+}
+
+// open starts or resumes a session for a prepared launch.
+func (d openCode2Driver) open(ctx context.Context, req StartRequest, l *launch) (Session, error) {
 	srv, err := d.rt.oc.acquireServer(ctx, openCode2{}, l.bin, l.env, nil)
 	if err != nil {
 		return nil, err
@@ -161,7 +174,7 @@ func (d openCode2Driver) start(ctx context.Context, req StartRequest, resume boo
 		_ = s.Close(ctx)
 		return nil, err
 	}
-	if resume && req.Model != "" {
+	if l.resume && req.Model != "" {
 		if err := s.setModel(ctx, req.Model, req.Effort); err != nil {
 			_ = s.Close(ctx)
 			return nil, err

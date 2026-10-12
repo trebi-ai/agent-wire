@@ -22,6 +22,9 @@ import (
 // openCodeReadyTimeout bounds the serve health wait.
 const openCodeReadyTimeout = 30 * time.Second
 
+// errOpenCodeWire marks a server that does not serve the wire's routes.
+var errOpenCodeWire = errors.New("opencode serve: wrong wire")
+
 // openCodeServerIdle is how long a refcount-zero shared server lingers before
 // shutdown.
 const openCodeServerIdle = 60 * time.Second
@@ -541,7 +544,7 @@ func (m *openCodeManager) startServer(ctx context.Context, key string, w openCod
 		if err := s.waitHealthy(ctx); err != nil {
 			_ = p.KillTree()
 			lastErr = err
-			if attempt < 2 {
+			if attempt < 2 && !errors.Is(err, errOpenCodeWire) {
 				continue
 			}
 			return nil, err
@@ -576,13 +579,13 @@ func (s *openCodeServer) waitHealthy(ctx context.Context) error {
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, s.baseURL()+s.wire.healthPath(), nil)
 		req.SetBasicAuth(s.username, s.password)
 		if resp, err := client.Do(req); err == nil {
-			var body struct {
-				Healthy bool   `json:"healthy"`
-				Version string `json:"version"`
-			}
-			_ = json.NewDecoder(resp.Body).Decode(&body)
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 			resp.Body.Close()
-			if body.Healthy {
+			if resp.StatusCode == http.StatusNotFound || strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
+				return fmt.Errorf("%w: %s answers HTTP %d %s; the binary speaks another OpenCode version",
+					errOpenCodeWire, s.wire.healthPath(), resp.StatusCode, resp.Header.Get("Content-Type"))
+			}
+			if resp.StatusCode == http.StatusOK && s.wire.ready(body) {
 				return nil
 			}
 		}

@@ -3,6 +3,7 @@ package agentwire
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/trebi-ai/agent-wire/internal/proc"
 )
 
 // oc2TestSSE serves the OpenCode 2.x /api/event stream. A test pushes frames
@@ -719,5 +722,68 @@ func TestOpenCode2ServerExitEndsSession(t *testing.T) {
 	}
 	if err := sess.Err(); err == nil {
 		t.Fatal("the session recorded no error for a dead server")
+	}
+}
+
+func TestOpenCodeWireFor(t *testing.T) {
+	dir := t.TempDir()
+	bin := func(name, version string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("#!/bin/sh\necho '"+version+"'\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	rt := New(Options{})
+	cases := map[string]Harness{
+		bin("v2", "opencode v2.0.26"): OpenCode2,
+		bin("v1", "1.14.3"):           OpenCode,
+		bin("none", ""):               OpenCode,
+	}
+	for path, want := range cases {
+		if got := rt.openCodeWireFor(context.Background(), path).harness(); got != want {
+			t.Errorf("%s: wire %s, want %s", filepath.Base(path), got, want)
+		}
+	}
+}
+
+func TestOpenCodeReady(t *testing.T) {
+	if !(openCode2{}).ready([]byte(`{"version":"2.0.26","pid":1}`)) {
+		t.Error("v2: /api/info with a version is not ready")
+	}
+	if (openCode2{}).ready([]byte(`<!doctype html>`)) {
+		t.Error("v2: html is ready")
+	}
+	if !(openCodeV1{}).ready([]byte(`{"healthy":true,"version":"1.14.3"}`)) {
+		t.Error("v1: healthy body is not ready")
+	}
+	if (openCodeV1{}).ready([]byte(`{"version":"2.0.26"}`)) {
+		t.Error("v1: v2 info body is ready")
+	}
+}
+
+// TestOpenCodeWrongWireFailsFast: a server that answers the health path with
+// the web app page fails at once, not after the ready timeout.
+func TestOpenCodeWrongWireFailsFast(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, "<!doctype html>")
+	}))
+	defer ts.Close()
+	u, _ := url.Parse(ts.URL)
+	port, _ := strconv.Atoi(u.Port())
+	p, err := proc.Start(context.Background(), proc.Opts{Path: "/bin/sleep", Args: []string{"30"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = p.KillTree() }()
+	s := &openCodeServer{port: port, username: "u", password: "p", wire: openCodeV1{}, proc: p}
+	start := time.Now()
+	err = s.waitHealthy(context.Background())
+	if !errors.Is(err, errOpenCodeWire) {
+		t.Fatalf("err = %v, want errOpenCodeWire", err)
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Fatalf("took %s", time.Since(start))
 	}
 }

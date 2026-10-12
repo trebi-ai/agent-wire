@@ -24,6 +24,8 @@ type openCodeWire interface {
 	prefix() string
 	// healthPath is the readiness endpoint.
 	healthPath() string
+	// ready reports whether a 200 body from healthPath means the server is up.
+	ready(body []byte) bool
 	// eventPath is the SSE endpoint.
 	eventPath() string
 	// eventScoped reports whether the event stream is scoped by session
@@ -339,6 +341,14 @@ func (openCodeV1) healthPath() string { return "/global/health" }
 func (openCodeV1) eventPath() string  { return "/event" }
 func (openCodeV1) eventScoped() bool  { return true }
 
+// ready reads GET /global/health: {healthy, version}.
+func (openCodeV1) ready(body []byte) bool {
+	var h struct {
+		Healthy bool `json:"healthy"`
+	}
+	return json.Unmarshal(body, &h) == nil && h.Healthy
+}
+
 // frame reads one V1 bus frame: {type, properties}.
 func (openCodeV1) frame(raw []byte) (string, map[string]any, string, bool) {
 	var m map[string]any
@@ -390,6 +400,9 @@ func (d openCodeDriver) start(ctx context.Context, req StartRequest, resume bool
 	l, err := d.rt.prepare(ctx, &req, resume)
 	if err != nil {
 		return nil, err
+	}
+	if _, v2 := d.rt.openCodeWireFor(ctx, l.bin).(openCode2); v2 {
+		return openCode2Driver(d).open(ctx, req, l)
 	}
 	srv, err := d.rt.oc.acquireServer(ctx, openCodeV1{}, l.bin, l.env, nil)
 	if err != nil {
@@ -810,6 +823,9 @@ func (rt *Runtime) openCodeModels(ctx context.Context, w openCodeWire, q ModelQu
 		return nil, err
 	}
 	defer l.cleanup()
+	if w.harness() == OpenCode {
+		w = rt.openCodeWireFor(ctx, l.bin)
+	}
 	srv, err := rt.oc.acquireServer(ctx, w, l.bin, l.env, nil)
 	if err != nil {
 		if w.harness() == OpenCode {
@@ -821,6 +837,20 @@ func (rt *Runtime) openCodeModels(ctx context.Context, w openCodeWire, q ModelQu
 	}
 	defer rt.oc.release(srv)
 	return w.models(ctx, srv, q.WorkingDir)
+}
+
+// openCodeWireFor picks the wire a binary speaks. OpenCode 2.x serves only the
+// V2 surface, so the opencode harness drives a 2.x binary on V2.
+func (rt *Runtime) openCodeWireFor(ctx context.Context, bin string) openCodeWire {
+	for _, f := range strings.Fields(rt.Version(ctx, bin)) {
+		if major, _, _, ok := parseSemver(f); ok {
+			if major >= 2 {
+				return openCode2{}
+			}
+			break
+		}
+	}
+	return openCodeV1{}
 }
 
 // openCodeCLIModels runs `opencode models`, which prints one provider/model

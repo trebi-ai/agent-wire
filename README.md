@@ -24,7 +24,7 @@ Every cache, server pool, version record and crash ledger hangs off one `Runtime
 |---|---|---|---|
 | Claude Code | `agentwire.Claude` | `claude` | stream-json (NDJSON) over stdin and stdout |
 | Codex | `agentwire.Codex` | `codex` | app-server JSON-RPC over stdin and stdout |
-| OpenCode | `agentwire.OpenCode` | `opencode` | `serve` REST plus SSE |
+| OpenCode | `agentwire.OpenCode` | `opencode` | `serve` REST plus SSE; a 2.x binary uses the `/api` wire |
 | OpenCode 2 (beta) | `agentwire.OpenCode2` | `opencode2` | `/api` REST plus SSE |
 | pi | `agentwire.Pi` | `pi` | pi RPC (NDJSON) over stdin and stdout |
 | Copilot | `agentwire.Copilot` | `copilot` | ACP over stdin and stdout |
