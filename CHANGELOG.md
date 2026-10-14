@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [native/v0.2.5] - 2026-10-14
+
+### Fixed
+
+- Native: `Prompt` sends `Prompt.Attachments`. Each image becomes a file part before the text part of the user message, and the ledger keeps it, so a resume replays the image. `Data` wins over `Path`. A non-image attachment returns `ErrUnsupported`. Before, the native runtime dropped all attachments.
+- OpenAI provider (`native/provider/openai/v0.2.3`): a user image renders as an `image_url` part with a data URL. Before, the provider sent the text only.
+
 ## [v0.6.1] - 2026-10-12
 
 ### Fixed

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -98,6 +100,10 @@ func (s *session) initEvent() agentwire.Event {
 // Prompt runs one turn. It blocks until the turn ends; events arrive on
 // Events while it runs.
 func (s *session) Prompt(ctx context.Context, p agentwire.Prompt) error {
+	msg, err := userMessage(p)
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
 	if s.turnStop != nil {
 		s.mu.Unlock()
@@ -105,8 +111,8 @@ func (s *session) Prompt(ctx context.Context, p agentwire.Prompt) error {
 	}
 	s.turnNo++
 	turn := s.turnNo
-	s.msgs = append(s.msgs, Message{Role: RoleUser, Parts: []Part{{Text: &TextPart{Text: p.Text}}}})
-	s.appendLocked(turn, Message{Role: RoleUser, Parts: []Part{{Text: &TextPart{Text: p.Text}}}})
+	s.msgs = append(s.msgs, msg)
+	s.appendLocked(turn, msg)
 	turnCtx, stop := context.WithCancel(ctx)
 	s.turnStop = stop
 	s.mu.Unlock()
@@ -136,6 +142,52 @@ func (s *session) Prompt(ctx context.Context, p agentwire.Prompt) error {
 	s.turnStop = nil
 	s.mu.Unlock()
 	return nil
+}
+
+// userMessage builds the user message of one prompt: one file part per
+// image, then the text part. Data wins over Path.
+func userMessage(p agentwire.Prompt) (Message, error) {
+	msg := Message{Role: RoleUser}
+	for _, a := range p.Attachments {
+		media := a.MIME
+		if media == "" {
+			media = imageMIME(a.Path)
+		}
+		if !strings.HasPrefix(media, "image/") {
+			return Message{}, fmt.Errorf("%w: native takes image attachments only, got %q", agentwire.ErrUnsupported, media)
+		}
+		data := a.Data
+		if len(data) == 0 && a.Path != "" {
+			b, err := os.ReadFile(a.Path)
+			if err != nil {
+				return Message{}, fmt.Errorf("native: attachment %s: %w", a.Path, err)
+			}
+			data = b
+		}
+		if len(data) == 0 {
+			return Message{}, errors.New("native: attachment with no data")
+		}
+		msg.Parts = append(msg.Parts, Part{File: &FilePart{MediaType: media, Data: data}})
+	}
+	if p.Text != "" || len(msg.Parts) == 0 {
+		msg.Parts = append(msg.Parts, Part{Text: &TextPart{Text: p.Text}})
+	}
+	return msg, nil
+}
+
+// imageMIME maps an image file extension to its media type.
+func imageMIME(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	}
+	return ""
 }
 
 // runTurn is the tool loop of one prompt. It returns the end reason of the

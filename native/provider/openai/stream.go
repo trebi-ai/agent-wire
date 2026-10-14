@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"iter"
 	"strings"
@@ -116,8 +117,8 @@ func messages(req native.Request) []openai.ChatCompletionMessageParamUnion {
 	for _, msg := range req.Messages {
 		switch msg.Role {
 		case native.RoleUser:
-			if text := joinText(msg.Parts); text != "" {
-				out = append(out, openai.UserMessage(text))
+			if um, ok := userMessage(msg.Parts); ok {
+				out = append(out, um)
 			}
 		case native.RoleAssistant:
 			am := openai.ChatCompletionAssistantMessageParam{}
@@ -143,6 +144,31 @@ func messages(req native.Request) []openai.ChatCompletionMessageParamUnion {
 		}
 	}
 	return out
+}
+
+// userMessage maps one user turn. Text alone stays a plain string. Images
+// become image_url parts (a data URL for inline bytes) before the text.
+func userMessage(parts []native.Part) (openai.ChatCompletionMessageParamUnion, bool) {
+	var content []openai.ChatCompletionContentPartUnionParam
+	for _, part := range parts {
+		f := part.File
+		if f == nil || !strings.HasPrefix(f.MediaType, "image/") {
+			continue
+		}
+		url := f.URL
+		if url == "" {
+			url = "data:" + f.MediaType + ";base64," + base64.StdEncoding.EncodeToString(f.Data)
+		}
+		content = append(content, openai.ImageContentPart(openai.ChatCompletionContentPartImageImageURLParam{URL: url}))
+	}
+	text := joinText(parts)
+	if len(content) == 0 {
+		return openai.UserMessage(text), text != ""
+	}
+	if text != "" {
+		content = append(content, openai.TextContentPart(text))
+	}
+	return openai.UserMessage(content), true
 }
 
 // functionCall maps one neutral tool call onto a function tool call.

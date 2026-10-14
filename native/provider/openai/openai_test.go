@@ -382,3 +382,36 @@ func TestStreamNamedToolChoiceAndNone(t *testing.T) {
 		}
 	}
 }
+
+func TestUserImageRendersAsDataURL(t *testing.T) {
+	rec := &recorded{}
+	base := newFixtureServer(t, []string{finishChunkJSON(t, "stop")}, rec)
+	m, err := New(agentwire.Credentials{Format: "openai", APIKey: "k", BaseURL: base}, "gpt-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := collect(t, m.Stream(context.Background(), native.Request{
+		Messages: []native.Message{{Role: native.RoleUser, Parts: []native.Part{
+			{File: &native.FilePart{MediaType: "image/png", Data: []byte{1, 2, 3}}},
+			{Text: &native.TextPart{Text: "What is this?"}},
+		}}},
+	})); err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	msgs, _ := rec.Body["messages"].([]any)
+	if len(msgs) != 1 {
+		t.Fatalf("messages = %v", msgs)
+	}
+	content, _ := msgs[0].(map[string]any)["content"].([]any)
+	if len(content) != 2 {
+		t.Fatalf("content = %#v", msgs[0])
+	}
+	img := content[0].(map[string]any)
+	url, _ := img["image_url"].(map[string]any)["url"].(string)
+	if img["type"] != "image_url" || url != "data:image/png;base64,AQID" {
+		t.Fatalf("image part = %#v", img)
+	}
+	if txt := content[1].(map[string]any); txt["type"] != "text" || txt["text"] != "What is this?" {
+		t.Fatalf("text part = %#v", txt)
+	}
+}

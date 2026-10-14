@@ -145,6 +145,41 @@ func TestSessionTextOnlyTurn(t *testing.T) {
 	}
 }
 
+// TestSessionImageAttachment pins the user message of a prompt with one
+// image: a file part from the path, then the text part, also in the ledger.
+func TestSessionImageAttachment(t *testing.T) {
+	img := filepath.Join(t.TempDir(), "shot.png")
+	if err := os.WriteFile(img, []byte{0x89, 'P', 'N', 'G'}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := &scriptModel{scripts: [][]StreamPart{textParts("a cat")}}
+	store := NewMemoryStore()
+	s := newSession(nil, m, "conv-img", sessionOpts{maxTurns: 5}, nil, SkillCatalog{})
+	s.store = store
+	ctx := context.Background()
+	if err := s.Prompt(ctx, agentwire.Prompt{Text: "what is this?", Attachments: []agentwire.Attachment{{Path: img}}}); err != nil {
+		t.Fatal(err)
+	}
+	collect(t, s)
+	parts := m.calls[0].Messages[0].Parts
+	if len(parts) != 2 || parts[0].File == nil || parts[1].Text == nil {
+		t.Fatalf("parts = %+v", parts)
+	}
+	if parts[0].File.MediaType != "image/png" || string(parts[0].File.Data) != "\x89PNG" {
+		t.Fatalf("file part = %+v", parts[0].File)
+	}
+	saved, err := store.Load(ctx, "conv-img")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved) == 0 || len(saved[0].Parts) != 2 || saved[0].Parts[0].File == nil {
+		t.Fatalf("ledger = %+v", saved)
+	}
+	if err := s.Prompt(ctx, agentwire.Prompt{Text: "x", Attachments: []agentwire.Attachment{{MIME: "text/plain", Data: []byte("hi")}}}); !errors.Is(err, agentwire.ErrUnsupported) {
+		t.Fatalf("text attachment err = %v, want ErrUnsupported", err)
+	}
+}
+
 // TestSessionOneToolCall covers start, execution, completion, and the tool
 // message fed back to the model.
 func TestSessionOneToolCall(t *testing.T) {
