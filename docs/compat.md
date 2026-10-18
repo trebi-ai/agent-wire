@@ -118,7 +118,7 @@ Protocol surfaces the library depends on, all confirmed on `0.0.0-beta-19242` (2
 | `GET /api/session/<id>`, `GET /api/session/<id>/message` | confirmed: both answer by session id; the `location` query parameter is accepted and changes nothing, so per-session calls need no directory |
 | `POST /api/session/<id>/prompt` | confirmed: a body of `{"text": …}` starts a turn. A V1 body with `parts` returns 400 `Missing key at ["text"]` |
 | `POST /api/session/<id>/model` | confirmed: `{"model":{"providerID":…,"id":…}}` selects the model, and the session reports it in `session.model.selected` |
-| `PUT /api/session/<id>/instructions/entries/<key>` | confirmed: an entry reaches the model. The key must match `^[a-z0-9][a-z0-9._-]*$`; `core/instructions` returns 404 because of the slash, while `agentwire.instructions` is accepted |
+| `PUT /api/experimental/session/<id>/instructions/entries/<key>` | confirmed: an entry reaches the model. OpenCode 2.0.26 (2026-10-18) serves it under `/api/experimental` only; `/api/session/<id>/instructions/...` returns 404. The key must match `^[a-z0-9][a-z0-9._-]*$`; `core/instructions` returns 404 because of the slash, while `agentwire.instructions` is accepted |
 | `POST /api/session/<id>/interrupt` | confirmed by the live tier |
 | `POST /api/session/<id>/permission/<id>/reply` | confirmed by the unit tier; the served OpenAPI document gives the body as `{"reply":"once"\|"always"\|"reject"}` |
 | `GET /api/event` SSE stream | confirmed: no query parameters, one connection for every location, events routed by `data.sessionID` |

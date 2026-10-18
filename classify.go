@@ -75,7 +75,7 @@ var classRules = []classRule{
 	{FailAuth, "token_revoked", []string{"token has been revoked", "token revoked"}},
 	{FailAuth, "not_logged_in", []string{
 		"not logged in", "please run /login", "please login", "login required",
-		"credentials", "oauth token",
+		"authentication required", "credentials", "oauth token",
 	}},
 	{FailAuth, "token_refresh_failed", []string{"oauth refresh failed", "invalid_grant"}},
 	{FailOverloaded, "capacity", []string{"overloaded", "529", "503", "server error", "capacity"}},

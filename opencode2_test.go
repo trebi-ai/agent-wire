@@ -148,7 +148,7 @@ func oc2TestNewOpenCode(t *testing.T, rt *Runtime) *oc2TestOpenCode {
 		oc.mu.Unlock()
 		oc2TestWriteJSON(t, w, map[string]any{"data": map[string]any{}})
 	})
-	mux.HandleFunc("/api/session/s1/instructions/entries/"+openCode2InstructionKey, func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/experimental/session/s1/instructions/entries/"+openCode2InstructionKey, func(w http.ResponseWriter, r *http.Request) {
 		body := oc2TestReadBody(t, r)
 		oc.mu.Lock()
 		oc.instructions = append(oc.instructions, body)

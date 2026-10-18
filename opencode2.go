@@ -262,12 +262,13 @@ func (s *openCode2Session) promptFiles(p Prompt) ([]map[string]any, error) {
 }
 
 // setInstructions writes the session instructions as a per-session entry.
+// OpenCode 2.0.26 serves the entries under /experimental only.
 func (s *openCode2Session) setInstructions(ctx context.Context) error {
 	text := strings.TrimSpace(s.instructions)
 	if text == "" {
 		return nil
 	}
-	return s.srv.call(ctx, "PUT", "/session/"+s.id+"/instructions/entries/"+openCode2InstructionKey, s.dir,
+	return s.srv.call(ctx, "PUT", "/experimental/session/"+s.id+"/instructions/entries/"+openCode2InstructionKey, s.dir,
 		map[string]any{"value": text}, nil)
 }
 

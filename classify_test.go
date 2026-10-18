@@ -20,6 +20,7 @@ func TestClassifyVendorErrorTexts(t *testing.T) {
 		{"credits gone", "You are out of credits", FailLimit, "credits_exhausted"},
 		{"plan refusal", "entitlement check failed", FailEntitlement, "plan_refused"},
 		{"login prompt", "Please run /login", FailAuth, "not_logged_in"},
+		{"cursor login", "jsonrpc error -32000: Authentication required. Please run 'agent login' first", FailAuth, "not_logged_in"},
 		{"revoked token", "token has been revoked", FailAuth, "token_revoked"},
 		{"overload code", "overloaded_error", FailOverloaded, "capacity"},
 		{"old cli", "unrecognized subcommand 'app-server'", FailProtocol, "cli_too_old"},
