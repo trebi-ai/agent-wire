@@ -32,13 +32,14 @@ func coaTestACPAgent(p *coaTestPeer, m coaTestFrame) {
 }
 
 // coaTestStartACP opens an in-memory ACP session against a scripted peer.
-func coaTestStartACP(t *testing.T, kind acpKind, req StartRequest, handler func(*coaTestPeer, coaTestFrame)) (*coaTestPeer, *wire.Session, *acpProtocol) {
+func coaTestStartACP(t *testing.T, kind acpKind, req StartRequest, handler func(*coaTestPeer, coaTestFrame), resume ...bool) (*coaTestPeer, *wire.Session, *acpProtocol) {
+	isResume := len(resume) > 0 && resume[0]
 	t.Helper()
 	if req.HandshakeTimeout <= 0 {
 		req.HandshakeTimeout = 2 * time.Second
 	}
 	peer := coaTestNewPeer(t, handler)
-	proto := newACPProtocol(coaTestRuntime(), kind, req, &launch{}, false)
+	proto := newACPProtocol(coaTestRuntime(), kind, req, &launch{}, false, isResume)
 	s := wire.NewMemorySession(string(kind.harness()), proto, peer.inW, peer.out, context.Background(), wire.Config{})
 	return peer, s, proto
 }
@@ -638,7 +639,7 @@ func TestACPSessionMeta(t *testing.T) {
 		Permissions:  PermissionPolicy{Mode: PermissionAuto},
 		Raw:          map[string]any{"grok_auto_mode": requireAuto},
 	}
-	proto := newACPProtocol(coaTestRuntime(), acpGrok, req, &launch{instructions: "the rules"}, false)
+	proto := newACPProtocol(coaTestRuntime(), acpGrok, req, &launch{instructions: "the rules"}, false, false)
 	params := proto.sessionParams()
 	meta, _ := params["_meta"].(map[string]any)
 	if meta["rules"] != "the rules" || meta["yoloMode"] != true || meta["autoMode"] != true {
@@ -648,13 +649,13 @@ func TestACPSessionMeta(t *testing.T) {
 		t.Fatalf("grok instructions: instructions=%q rules=%q", proto.instructions, proto.rules)
 	}
 
-	omp := newACPProtocol(coaTestRuntime(), acpOMP, StartRequest{Instructions: "the rules"}, &launch{instructions: "the rules"}, false)
+	omp := newACPProtocol(coaTestRuntime(), acpOMP, StartRequest{Instructions: "the rules"}, &launch{instructions: "the rules"}, false, false)
 	if _, ok := omp.sessionParams()["_meta"]; ok {
 		t.Fatalf("omp session params carry _meta: %+v", omp.sessionParams())
 	}
 
 	// autoMode is opt-in, and yoloMode follows the policy.
-	proto = newACPProtocol(coaTestRuntime(), acpGrok, StartRequest{Instructions: "r"}, &launch{instructions: "r"}, false)
+	proto = newACPProtocol(coaTestRuntime(), acpGrok, StartRequest{Instructions: "r"}, &launch{instructions: "r"}, false, false)
 	meta, _ = proto.sessionParams()["_meta"].(map[string]any)
 	if meta["yoloMode"] != nil || meta["autoMode"] != nil {
 		t.Fatalf("grok _meta without auto: %+v", meta)
@@ -678,7 +679,7 @@ func TestACPAuthRequired(t *testing.T) {
 		}
 	}
 	peer := coaTestNewPeer(t, handler)
-	proto := newACPProtocol(coaTestRuntime(), acpGrok, StartRequest{HandshakeTimeout: 2 * time.Second}, &launch{}, false)
+	proto := newACPProtocol(coaTestRuntime(), acpGrok, StartRequest{HandshakeTimeout: 2 * time.Second}, &launch{}, false, false)
 	proto.client.SetWrite(func(b []byte) error {
 		_, err := peer.inW.Write(b)
 		return err
@@ -752,7 +753,7 @@ func acpTestStartReplay(t *testing.T, kind acpKind, req StartRequest, name strin
 			coaTestACPAgent(p, f)
 		}
 	}
-	peer, ws, proto := coaTestStartACP(t, kind, req, handler)
+	peer, ws, proto := coaTestStartACP(t, kind, req, handler, req.SessionID != "")
 	s := &acpSession{Session: ws, p: proto}
 	events := coaTestWatch(t, s.Events())
 	events.next(EventInit)
@@ -954,7 +955,7 @@ func TestOMPAuthProbe(t *testing.T) {
 // TestGrokSessionMeta covers the grok session _meta fields.
 func TestGrokSessionMeta(t *testing.T) {
 	req := StartRequest{Instructions: "rules", Permissions: PermissionPolicy{Mode: PermissionAuto}, Raw: map[string]any{"grok_auto_mode": true}}
-	proto := newACPProtocol(coaTestRuntime(), acpGrok, req, &launch{instructions: "rules"}, false)
+	proto := newACPProtocol(coaTestRuntime(), acpGrok, req, &launch{instructions: "rules"}, false, false)
 	meta, _ := proto.sessionParams()["_meta"].(map[string]any)
 	if meta["rules"] != "rules" || meta["yoloMode"] != true || meta["autoMode"] != true {
 		t.Fatalf("session _meta: %+v", meta)
@@ -978,7 +979,7 @@ func TestGrokModelsFromInitialize(t *testing.T) {
 		}
 	}
 	peer := coaTestNewPeer(t, handler)
-	proto := newACPProtocol(coaTestRuntime(), acpGrok, StartRequest{HandshakeTimeout: 2 * time.Second}, &launch{}, false)
+	proto := newACPProtocol(coaTestRuntime(), acpGrok, StartRequest{HandshakeTimeout: 2 * time.Second}, &launch{}, false, false)
 	proto.client.SetWrite(func(b []byte) error { _, err := peer.inW.Write(b); return err })
 	go func() {
 		sc := bufio.NewScanner(peer.out)
@@ -1101,5 +1102,30 @@ func TestACPSessionArgsDropsPaneFlags(t *testing.T) {
 	want := []string{"-m", "x"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("stripACPSessionArgs = %v, want %v", got, want)
+	}
+}
+
+// TestACPStartIgnoresPaneSessionID proves a fresh Start opens session/new even
+// when the caller carries a session id minted for the pane.
+func TestACPStartIgnoresPaneSessionID(t *testing.T) {
+	var methods []string
+	handler := func(p *coaTestPeer, f coaTestFrame) {
+		methods = append(methods, f.method())
+		switch f.method() {
+		case "initialize":
+			p.reply(f.m["id"], map[string]any{"protocolVersion": 1, "authMethods": []any{}})
+		case "session/new":
+			p.reply(f.m["id"], map[string]any{"sessionId": "ses_new"})
+		}
+	}
+	_, s, _ := coaTestStartACP(t, acpGrok, StartRequest{SessionID: "pane-id"}, handler)
+	coaTestWatch(t, s.Events()).next(EventInit)
+	for _, m := range methods {
+		if m == "session/resume" || m == "session/load" {
+			t.Fatalf("fresh Start sent %s", m)
+		}
+	}
+	if s.ID() != "ses_new" {
+		t.Fatalf("session id = %q, want ses_new", s.ID())
 	}
 }

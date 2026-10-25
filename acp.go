@@ -106,7 +106,7 @@ func (d acpDriver) start(ctx context.Context, req StartRequest, resume bool) (Se
 	if err != nil {
 		return nil, err
 	}
-	proto := newACPProtocol(d.rt, d.kind, req, l, fresh)
+	proto := newACPProtocol(d.rt, d.kind, req, l, fresh, resume)
 	p, err := proc.Start(ctx, proc.Opts{
 		Path: l.bin, Args: args, Dir: req.WorkingDir,
 		Env: proc.ChildEnv(l.env), OnStderr: d.rt.stderrHook(d.kind.harness(), req.OnStderr),
@@ -181,7 +181,7 @@ func (d acpDriver) Models(ctx context.Context, q ModelQuery) ([]ModelInfo, error
 	if err != nil {
 		return nil, err
 	}
-	proto := newACPProtocol(d.rt, d.kind, req, l, false)
+	proto := newACPProtocol(d.rt, d.kind, req, l, false, false)
 	a := probeAdapter{
 		run: func(ctx context.Context, w *wire.Writer) error {
 			proto.SetWriter(w)
@@ -424,7 +424,14 @@ type acpProtocol struct {
 	configOptions []acpConfigOption
 }
 
-func newACPProtocol(rt *Runtime, kind acpKind, req StartRequest, l *launch, fresh bool) *acpProtocol {
+func newACPProtocol(rt *Runtime, kind acpKind, req StartRequest, l *launch, fresh, resume bool) *acpProtocol {
+	// Start opens a new session. Only Cursor needs a client-chosen id,
+	// because create-chat mints the chat before the handshake. Every other
+	// ACP agent assigns its own id on session/new.
+	resumeID := req.SessionID
+	if !resume && kind != acpCursor {
+		resumeID = ""
+	}
 	timeout := req.HandshakeTimeout
 	if timeout <= 0 {
 		timeout = acpHandshakeTimeout
@@ -445,7 +452,7 @@ func newACPProtocol(rt *Runtime, kind acpKind, req StartRequest, l *launch, fres
 		instructions:     l.instructions,
 		autoMode:         autoMode,
 		authMethod:       req.RawString("acp_auth_method"),
-		resumeID:         req.SessionID,
+		resumeID:         resumeID,
 		freshSession:     fresh,
 		approvals:        map[string][]acpOption{},
 	}
