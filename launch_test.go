@@ -3,6 +3,7 @@ package agentwire
 import (
 	"context"
 	"maps"
+	"os"
 	"runtime"
 	"slices"
 	"strings"
@@ -389,4 +390,124 @@ func TestLaunchPrepareBinaryResolution(t *testing.T) {
 			t.Fatalf("env = %v, want empty", l.env)
 		}
 	})
+}
+
+// acpTestArgv builds the full ACP argv for a request: the harness-level args
+// plus the subcommand and its flags.
+func acpTestArgv(t *testing.T, kind acpKind, req StartRequest) ([]string, *launch) {
+	t.Helper()
+	req.Binary = launchTestSh
+	req.Harness = kind.harness()
+	rt := New(Options{})
+	l, err := rt.prepare(context.Background(), &req, false)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	args, err := acpDriver{rt, kind}.acpArgs(context.Background(), l, req, false)
+	if err != nil {
+		t.Fatalf("acpArgs: %v", err)
+	}
+	return args, l
+}
+
+// TestOMPLaunchArgs pins the omp argv: the subcommand, then every root flag.
+func TestOMPLaunchArgs(t *testing.T) {
+	args, _ := acpTestArgv(t, acpOMP, StartRequest{
+		Model:        "opencode-go/beam-free",
+		Effort:       "max",
+		Instructions: "the instructions",
+		Permissions:  PermissionPolicy{Mode: PermissionAsk},
+	})
+	want := []string{"acp", "--model", "opencode-go/beam-free", "--thinking", "max", "--approval-mode", "always-ask", "--append-system-prompt", "the instructions"}
+	if !slices.Equal(args, want) {
+		t.Fatalf("omp argv = %v, want %v", args, want)
+	}
+
+	auto, _ := acpTestArgv(t, acpOMP, StartRequest{Permissions: PermissionPolicy{Mode: PermissionAuto}})
+	if !slices.Equal(auto, []string{"acp", "--approval-mode", "yolo"}) {
+		t.Fatalf("omp auto argv = %v", auto)
+	}
+
+	// A session started in the user's home needs --allow-home.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	inHome, _ := acpTestArgv(t, acpOMP, StartRequest{WorkingDir: home})
+	if !slices.Equal(inHome, []string{"acp", "--approval-mode", "always-ask", "--allow-home"}) {
+		t.Fatalf("omp home argv = %v", inHome)
+	}
+}
+
+// TestOMPSkills pins the plugin-dir skill injection.
+func TestOMPSkills(t *testing.T) {
+	dir := t.TempDir()
+	skill := dir + "/skill"
+	if err := os.MkdirAll(skill, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skill+"/SKILL.md", []byte("---\nname: marker\ndescription: Marker skill\n---\nBody\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	args, _ := acpTestArgv(t, acpOMP, StartRequest{Skills: []Skill{{Dir: skill}}})
+	i := slices.Index(args, "--plugin-dir")
+	if i < 0 || i+1 >= len(args) {
+		t.Fatalf("omp argv without --plugin-dir: %v", args)
+	}
+	plugin := args[i+1]
+	if _, err := os.Stat(plugin + "/.claude-plugin/plugin.json"); err != nil {
+		t.Fatalf("plugin manifest: %v", err)
+	}
+	if _, err := os.Stat(plugin + "/skills/marker/SKILL.md"); err != nil {
+		t.Fatalf("linked skill: %v", err)
+	}
+}
+
+// TestOMPHome pins the isolated omp home.
+func TestOMPHome(t *testing.T) {
+	home := t.TempDir()
+	_, l := acpTestArgv(t, acpOMP, StartRequest{Home: home})
+	if l.env["PI_CODING_AGENT_DIR"] != home {
+		t.Fatalf("PI_CODING_AGENT_DIR = %q", l.env["PI_CODING_AGENT_DIR"])
+	}
+}
+
+// TestGrokLaunchArgs pins the grok argv shape: agent flags sit between agent
+// and stdio.
+func TestGrokLaunchArgs(t *testing.T) {
+	args, l := acpTestArgv(t, acpGrok, StartRequest{
+		Model:        "grok-4.7",
+		Effort:       "max",
+		Instructions: "the rules",
+		Permissions:  PermissionPolicy{Mode: PermissionAuto},
+	})
+	want := []string{"agent", "-m", "grok-4.7", "--reasoning-effort", "xhigh", "--always-approve", "--no-leader", "stdio"}
+	if !slices.Equal(args, want) {
+		t.Fatalf("grok argv = %v, want %v", args, want)
+	}
+	if l.instructions != "the rules" {
+		t.Fatalf("grok instructions = %q, want the wire text", l.instructions)
+	}
+
+	leader, _ := acpTestArgv(t, acpGrok, StartRequest{Raw: map[string]any{"grok_leader": true}})
+	if slices.Contains(leader, "--no-leader") {
+		t.Fatalf("grok leader argv = %v", leader)
+	}
+	if leader[len(leader)-1] != "stdio" || leader[0] != "agent" {
+		t.Fatalf("grok leader argv = %v", leader)
+	}
+}
+
+// TestGrokHome pins the isolated grok home and the update switch.
+func TestGrokHome(t *testing.T) {
+	home := t.TempDir()
+	_, l := acpTestArgv(t, acpGrok, StartRequest{Home: home})
+	if l.env["GROK_HOME"] != home {
+		t.Fatalf("GROK_HOME = %q", l.env["GROK_HOME"])
+	}
+	b, err := os.ReadFile(home + "/config.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "auto_update = false") {
+		t.Fatalf("config.toml = %q", b)
+	}
 }

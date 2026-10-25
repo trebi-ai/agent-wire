@@ -39,6 +39,8 @@ var liveTestHarnesses = []agentwire.Harness{
 	agentwire.Copilot,
 	agentwire.Cursor,
 	agentwire.Gemini,
+	agentwire.OMP,
+	agentwire.Grok,
 }
 
 // liveTestMCPHelperEnv marks the re-executed test binary that serves the MCP

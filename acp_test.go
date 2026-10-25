@@ -1,8 +1,11 @@
 package agentwire
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -505,5 +508,591 @@ func TestCursorLastIdentifier(t *testing.T) {
 				t.Fatalf("lastIdentifier(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+// acpTestFixtureFrame returns the frame with the wanted result id from a
+// recorded ACP fixture.
+func acpTestFixtureFrame(t *testing.T, name string, id string) map[string]any {
+	t.Helper()
+	b, err := os.ReadFile("testdata/acp/" + name)
+	if err != nil {
+		t.Fatalf("read fixture %s: %v", name, err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		var m map[string]any
+		dec := json.NewDecoder(strings.NewReader(line))
+		dec.UseNumber()
+		if dec.Decode(&m) != nil {
+			continue
+		}
+		if number, _ := m["id"].(json.Number); number.String() == id {
+			return m
+		}
+	}
+	t.Fatalf("fixture %s has no frame with id %s", name, id)
+	return nil
+}
+
+// TestACPConfigOptionUpdate proves a config_option_update notification changes
+// the model the session reports.
+func TestACPConfigOptionUpdate(t *testing.T) {
+	newReply := mdTestFixture(t, "omp_session_new.json")
+	handler := func(p *coaTestPeer, f coaTestFrame) {
+		switch f.method() {
+		case "session/new":
+			p.reply(f.m["id"], json.RawMessage(newReply))
+		default:
+			coaTestACPAgent(p, f)
+		}
+	}
+	peer, ws, proto := coaTestStartACP(t, acpOMP, StartRequest{}, handler)
+	s := &acpSession{Session: ws, p: proto}
+	events := coaTestWatch(t, s.Events())
+	events.next(EventInit)
+
+	var update map[string]any
+	if err := json.Unmarshal(newReply, &update); err != nil {
+		t.Fatal(err)
+	}
+	options := update["configOptions"].([]any)
+	for _, raw := range options {
+		opt := raw.(map[string]any)
+		if opt["id"] == "model" {
+			opt["currentValue"] = "opencode-go/beam-free"
+		}
+	}
+	peer.notify("session/update", coaTestUpdate("ses_omp_1", map[string]any{
+		"sessionUpdate": "config_option_update",
+		"configOptions": options,
+	}))
+	events.next(EventStatus)
+	if got := mdTestDefault(s.Models()); got != "opencode-go/beam-free" {
+		t.Fatalf("current model after config_option_update = %q", got)
+	}
+}
+
+// TestACPSteer drives steering through _session/steering and proves the
+// refusal holds the prompt.
+func TestACPSteer(t *testing.T) {
+	refuse := false
+	handler := func(p *coaTestPeer, f coaTestFrame) {
+		switch f.method() {
+		case "initialize":
+			p.reply(f.m["id"], map[string]any{
+				"protocolVersion": 1,
+				"authMethods":     []any{map[string]any{"id": "agent"}},
+				"_meta":           map[string]any{"steering": map[string]any{"supported": true}},
+			})
+		case "session/new":
+			p.reply(f.m["id"], map[string]any{"sessionId": "ses_1"})
+		case "_session/steering":
+			outcome := "injected"
+			if refuse {
+				outcome = "promptRequired"
+			}
+			p.reply(f.m["id"], map[string]any{"outcome": outcome})
+		}
+	}
+	peer, ws, proto := coaTestStartACP(t, acpOMP, StartRequest{}, handler)
+	coaTestWatch(t, ws.Events()).next(EventInit)
+
+	// No turn runs.
+	if err := proto.Steer(context.Background(), Prompt{Text: "idle"}); !errors.Is(err, ErrNoActiveTurn) {
+		t.Fatalf("steer with no turn: %v", err)
+	}
+
+	if _, err := proto.EncodePrompt(Prompt{Text: "run"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := proto.Steer(context.Background(), Prompt{Text: "also this"}); err != nil {
+		t.Fatalf("steer during a turn: %v", err)
+	}
+	call := peer.waitMethod("_session/steering")
+	params := call.params()
+	if params["sessionId"] != "ses_1" {
+		t.Fatalf("steering params: %s", call.raw)
+	}
+	prompt, _ := params["prompt"].([]any)
+	if len(prompt) != 1 || prompt[0].(map[string]any)["text"] != "also this" {
+		t.Fatalf("steering prompt: %s", call.raw)
+	}
+
+	// A vendor refusal holds the prompt.
+	refuse = true
+	if err := proto.Steer(context.Background(), Prompt{Text: "late"}); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("refused steer: %v", err)
+	}
+	s := &acpSession{Session: ws, p: proto}
+	if d, err := s.Send(context.Background(), Prompt{Text: "held"}); err != nil || d != DeliveryHeld {
+		t.Fatalf("send after a refused steer: %q %v, want held", d, err)
+	}
+}
+
+// TestACPSessionMeta proves the per-kind _meta block reaches only the kinds
+// that fill it.
+func TestACPSessionMeta(t *testing.T) {
+	requireAuto := true
+	req := StartRequest{
+		Instructions: "the rules",
+		Permissions:  PermissionPolicy{Mode: PermissionAuto},
+		Raw:          map[string]any{"grok_auto_mode": requireAuto},
+	}
+	proto := newACPProtocol(coaTestRuntime(), acpGrok, req, &launch{instructions: "the rules"}, false)
+	params := proto.sessionParams()
+	meta, _ := params["_meta"].(map[string]any)
+	if meta["rules"] != "the rules" || meta["yoloMode"] != true || meta["autoMode"] != true {
+		t.Fatalf("grok session _meta: %+v", meta)
+	}
+	if proto.instructions != "" || proto.rules != "the rules" {
+		t.Fatalf("grok instructions: instructions=%q rules=%q", proto.instructions, proto.rules)
+	}
+
+	omp := newACPProtocol(coaTestRuntime(), acpOMP, StartRequest{Instructions: "the rules"}, &launch{instructions: "the rules"}, false)
+	if _, ok := omp.sessionParams()["_meta"]; ok {
+		t.Fatalf("omp session params carry _meta: %+v", omp.sessionParams())
+	}
+
+	// autoMode is opt-in, and yoloMode follows the policy.
+	proto = newACPProtocol(coaTestRuntime(), acpGrok, StartRequest{Instructions: "r"}, &launch{instructions: "r"}, false)
+	meta, _ = proto.sessionParams()["_meta"].(map[string]any)
+	if meta["yoloMode"] != nil || meta["autoMode"] != nil {
+		t.Fatalf("grok _meta without auto: %+v", meta)
+	}
+}
+
+// TestACPAuthRequired proves the grok login refusal becomes a not_logged_in
+// event without an authenticate call.
+func TestACPAuthRequired(t *testing.T) {
+	init := acpTestFixtureFrame(t, "grok/handshake.ndjson", "1")
+	authErr := acpTestFixtureFrame(t, "grok/auth_required.ndjson", "2")
+	authenticates := 0
+	handler := func(p *coaTestPeer, f coaTestFrame) {
+		switch f.method() {
+		case "initialize":
+			p.reply(f.m["id"], init["result"])
+		case "session/new":
+			p.push(map[string]any{"jsonrpc": "2.0", "id": f.m["id"], "error": authErr["error"]})
+		case "authenticate":
+			authenticates++
+		}
+	}
+	peer := coaTestNewPeer(t, handler)
+	proto := newACPProtocol(coaTestRuntime(), acpGrok, StartRequest{HandshakeTimeout: 2 * time.Second}, &launch{}, false)
+	proto.client.SetWrite(func(b []byte) error {
+		_, err := peer.inW.Write(b)
+		return err
+	})
+	go func() {
+		sc := bufio.NewScanner(peer.out)
+		for sc.Scan() {
+			proto.client.Handle(sc.Bytes())
+		}
+	}()
+	if _, err := proto.initialize(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	events := proto.openOrLoad(context.Background())
+	if len(events) != 1 || events[0].Type != EventError {
+		t.Fatalf("openOrLoad events: %+v", events)
+	}
+	if events[0].Code != "grok.not_logged_in" || events[0].EndReason != "auth" {
+		t.Fatalf("auth error: %+v", events[0])
+	}
+	if authenticates != 0 {
+		t.Fatalf("authenticate calls = %d, want 0", authenticates)
+	}
+}
+
+// acpTestFixtureLines returns every frame of a recorded ACP fixture.
+func acpTestFixtureLines(t *testing.T, name string) []map[string]any {
+	t.Helper()
+	b, err := os.ReadFile("testdata/acp/" + name)
+	if err != nil {
+		t.Fatalf("read fixture %s: %v", name, err)
+	}
+	var out []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		dec := json.NewDecoder(strings.NewReader(line))
+		dec.UseNumber()
+		var m map[string]any
+		if dec.Decode(&m) != nil {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// acpTestResultOf returns the result of the first frame whose id matches.
+func acpTestResultOf(t *testing.T, frames []map[string]any, id string) map[string]any {
+	t.Helper()
+	for _, f := range frames {
+		if number, _ := f["id"].(json.Number); number.String() == id {
+			result, _ := f["result"].(map[string]any)
+			return result
+		}
+	}
+	t.Fatalf("no frame with id %s", id)
+	return nil
+}
+
+// acpTestStartReplay opens a session whose handshake answers come from a
+// recorded fixture and returns the remaining frames to push.
+func acpTestStartReplay(t *testing.T, kind acpKind, req StartRequest, name string) (*coaTestPeer, *acpSession, *coaTestEvents, func()) {
+	t.Helper()
+	frames := acpTestFixtureLines(t, name)
+	handler := func(p *coaTestPeer, f coaTestFrame) {
+		switch f.method() {
+		case "initialize":
+			p.reply(f.m["id"], acpTestResultOf(t, frames, "1"))
+		case "session/new", "session/resume", "session/load":
+			p.reply(f.m["id"], acpTestResultOf(t, frames, "2"))
+		default:
+			coaTestACPAgent(p, f)
+		}
+	}
+	peer, ws, proto := coaTestStartACP(t, kind, req, handler)
+	s := &acpSession{Session: ws, p: proto}
+	events := coaTestWatch(t, s.Events())
+	events.next(EventInit)
+	replay := func() {
+		for _, f := range frames[2:] {
+			peer.push(f)
+		}
+	}
+	return peer, s, events, replay
+}
+
+// TestOMPSession replays a recorded omp turn: init, assistant text, tool call,
+// usage and the success result.
+func TestOMPSession(t *testing.T) {
+	_, s, events, replay := acpTestStartReplay(t, acpOMP, StartRequest{}, "omp/turn_tool.ndjson")
+	if err := s.Prompt(context.Background(), Prompt{Text: "run"}); err != nil {
+		t.Fatal(err)
+	}
+	replay()
+	var text strings.Builder
+	sawTool, sawExec := false, false
+	for {
+		ev := events.nextWhere(func(ev Event) bool {
+			return ev.Type == EventAssistant || ev.Type == EventTool || ev.Type == EventUsage || ev.Type == EventResult
+		})
+		switch ev.Type {
+		case EventAssistant:
+			text.WriteString(ev.Text)
+		case EventTool:
+			if ev.Tool == nil {
+				t.Fatal("tool event without a tool")
+			}
+			if ev.Tool.Kind == ToolExec {
+				sawExec = true
+			}
+			if ev.Tool.Status == "completed" {
+				sawTool = true
+			}
+		case EventUsage:
+			if ev.Usage == nil || ev.Usage.Input == 0 {
+				t.Fatalf("usage event: %+v", ev.Usage)
+			}
+		case EventResult:
+			if ev.Result == nil || ev.Result.IsError || ev.Result.Subtype != "success" {
+				t.Fatalf("result: %+v", ev.Result)
+			}
+			if !strings.Contains(text.String(), "SPIKE-SHELL") {
+				t.Fatalf("assistant text: %q", text.String())
+			}
+			if !sawTool || !sawExec {
+				t.Fatalf("tool events: completed=%v exec=%v", sawTool, sawExec)
+			}
+			return
+		}
+	}
+}
+
+// TestOMPPermission replays the first recorded permission turn under each
+// policy.
+func TestOMPPermission(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		mode       PermissionMode
+		wantEvents int
+	}{
+		{"ask", PermissionAsk, 1},
+		{"auto_edit", PermissionAutoEdit, 1},
+		{"auto", PermissionAuto, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := StartRequest{Permissions: PermissionPolicy{Mode: tc.mode}}
+			frames := acpTestFixtureLines(t, "omp/permission.ndjson")
+			// Keep the first turn: everything through its prompt result.
+			var first []map[string]any
+			for _, f := range frames[2:] {
+				first = append(first, f)
+				if number, _ := f["id"].(json.Number); number.String() == "3" {
+					break
+				}
+			}
+			handler := func(p *coaTestPeer, f coaTestFrame) {
+				switch f.method() {
+				case "initialize":
+					p.reply(f.m["id"], acpTestResultOf(t, frames, "1"))
+				case "session/new":
+					p.reply(f.m["id"], acpTestResultOf(t, frames, "2"))
+				default:
+					coaTestACPAgent(p, f)
+				}
+			}
+			peer, ws, proto := coaTestStartACP(t, acpOMP, req, handler)
+			s := &acpSession{Session: ws, p: proto}
+			events := coaTestWatch(t, s.Events())
+			events.next(EventInit)
+			if err := s.Prompt(context.Background(), Prompt{Text: "run"}); err != nil {
+				t.Fatal(err)
+			}
+			for _, f := range first {
+				peer.push(f)
+			}
+			seen := 0
+			for {
+				ev := events.nextWhere(func(ev Event) bool {
+					return ev.Type == EventPermission || ev.Type == EventResult
+				})
+				if ev.Type == EventResult {
+					break
+				}
+				seen++
+				if tc.mode == PermissionAuto {
+					t.Fatalf("permission event under auto: %+v", ev.Permission)
+				}
+				if err := s.AnswerPermission(context.Background(), ev.Permission.ID, Decision{Allow: true}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if seen != tc.wantEvents {
+				t.Fatalf("permission events = %d, want %d", seen, tc.wantEvents)
+			}
+		})
+	}
+}
+
+// TestOMPResume replays the recorded resume handshake and recall turn.
+func TestOMPResume(t *testing.T) {
+	_, s, _, replay := acpTestStartReplay(t, acpOMP, StartRequest{SessionID: "ses_omp_1"}, "omp/resume.ndjson")
+	if err := s.Prompt(context.Background(), Prompt{Text: "recall"}); err != nil {
+		t.Fatal(err)
+	}
+	replay()
+}
+
+// TestOMPCancel replays the recorded cancel turn.
+func TestOMPCancel(t *testing.T) {
+	_, s, events, replay := acpTestStartReplay(t, acpOMP, StartRequest{}, "omp/cancel.ndjson")
+	if err := s.Prompt(context.Background(), Prompt{Text: "run"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Interrupt(context.Background())
+	replay()
+	res := events.next(EventResult)
+	if res.Result == nil || res.Result.Subtype != "cancelled" {
+		t.Fatalf("cancel result: %+v", res.Result)
+	}
+}
+
+// TestOMPSetModel replays the recorded config option change.
+func TestOMPSetModel(t *testing.T) {
+	_, s, _, replay := acpTestStartReplay(t, acpOMP, StartRequest{}, "omp/set_model.ndjson")
+	done := make(chan error, 1)
+	go func() { done <- s.SetModel(context.Background(), "opencode-go/beam-free") }()
+	replay()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestOMPModels reads the provider/model ids and the default from the recorded
+// session/new.
+func TestOMPModels(t *testing.T) {
+	newReply := mdTestFixture(t, "omp_session_new.json")
+	handler := func(p *coaTestPeer, f coaTestFrame) {
+		switch f.method() {
+		case "session/new":
+			p.reply(f.m["id"], json.RawMessage(newReply))
+		default:
+			coaTestACPAgent(p, f)
+		}
+	}
+	_, ws, proto := coaTestStartACP(t, acpOMP, StartRequest{}, handler)
+	s := &acpSession{Session: ws, p: proto}
+	coaTestWatch(t, s.Events()).next(EventInit)
+	models := s.Models()
+	if len(models) != 3 || models[0].ID != "opencode-go/deepseek-v4.1-flash" || !models[0].Default {
+		t.Fatalf("omp models: %+v", models)
+	}
+}
+
+// TestOMPAuthProbe covers the omp models --json parser.
+func TestOMPAuthProbe(t *testing.T) {
+	parse := authProbes[OMP].parse
+	cases := []struct {
+		out   string
+		err   error
+		state AuthState
+	}{
+		{`{"models":[{"id":"x"}]}`, nil, AuthOK},
+		{`{"models":[]}`, nil, AuthMissing},
+		{"not json", nil, AuthUnknown},
+	}
+	for _, tc := range cases {
+		state, _, _ := parse(tc.out, tc.err)
+		if state != tc.state {
+			t.Fatalf("parse(%q) = %q, want %q", tc.out, state, tc.state)
+		}
+	}
+}
+
+// TestGrokSessionMeta covers the grok session _meta fields.
+func TestGrokSessionMeta(t *testing.T) {
+	req := StartRequest{Instructions: "rules", Permissions: PermissionPolicy{Mode: PermissionAuto}, Raw: map[string]any{"grok_auto_mode": true}}
+	proto := newACPProtocol(coaTestRuntime(), acpGrok, req, &launch{instructions: "rules"}, false)
+	meta, _ := proto.sessionParams()["_meta"].(map[string]any)
+	if meta["rules"] != "rules" || meta["yoloMode"] != true || meta["autoMode"] != true {
+		t.Fatalf("session _meta: %+v", meta)
+	}
+}
+
+// TestGrokModelsFromInitialize proves the model list comes from initialize
+// without a session/new.
+func TestGrokModelsFromInitialize(t *testing.T) {
+	var init map[string]any
+	if err := json.Unmarshal(mdTestFixture(t, "grok_initialize.json"), &init); err != nil {
+		t.Fatal(err)
+	}
+	sessionOpens := 0
+	handler := func(p *coaTestPeer, f coaTestFrame) {
+		switch f.method() {
+		case "initialize":
+			p.reply(f.m["id"], init)
+		case "session/new":
+			sessionOpens++
+		}
+	}
+	peer := coaTestNewPeer(t, handler)
+	proto := newACPProtocol(coaTestRuntime(), acpGrok, StartRequest{HandshakeTimeout: 2 * time.Second}, &launch{}, false)
+	proto.client.SetWrite(func(b []byte) error { _, err := peer.inW.Write(b); return err })
+	go func() {
+		sc := bufio.NewScanner(peer.out)
+		for sc.Scan() {
+			proto.client.Handle(sc.Bytes())
+		}
+	}()
+	if _, err := proto.initialize(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !proto.offersModels() {
+		t.Fatal("initialize offers no models")
+	}
+	models := proto.sessionModels()
+	if len(models) != 2 || models[0].ID != "grok-4.7" || !models[0].Default {
+		t.Fatalf("grok models: %+v", models)
+	}
+	if models[0].Description == "" {
+		t.Fatalf("model description is empty: %+v", models[0])
+	}
+	if sessionOpens != 0 {
+		t.Fatalf("session/new calls = %d, want 0", sessionOpens)
+	}
+}
+
+// TestGrokSession replays the recorded grok turn.
+func TestGrokSession(t *testing.T) {
+	_, s, events, replay := acpTestStartReplay(t, acpGrok, StartRequest{}, "grok/turn_tool.ndjson")
+	if err := s.Prompt(context.Background(), Prompt{Text: "run"}); err != nil {
+		t.Fatal(err)
+	}
+	replay()
+	var text strings.Builder
+	for {
+		ev := events.nextWhere(func(ev Event) bool {
+			return ev.Type == EventAssistant || ev.Type == EventResult || ev.Type == EventUsage
+		})
+		switch ev.Type {
+		case EventAssistant:
+			text.WriteString(ev.Text)
+		case EventUsage:
+			if ev.Usage == nil || ev.Usage.Input == 0 {
+				t.Fatalf("usage: %+v", ev.Usage)
+			}
+		case EventResult:
+			if ev.Result == nil || ev.Result.Subtype != "success" {
+				t.Fatalf("result: %+v", ev.Result)
+			}
+			if !strings.Contains(text.String(), "GROK-SHELL") && !strings.Contains(text.String(), "GROK-PERM") {
+				t.Fatalf("assistant text: %q", text.String())
+			}
+			return
+		}
+	}
+}
+
+// TestGrokPermission replays the recorded ask-mode turn: grok 1.0.70 runs the
+// tool and never sends session/request_permission, so no permission event may
+// arrive before the result (see docs/compat.md).
+func TestGrokPermission(t *testing.T) {
+	_, s, events, replay := acpTestStartReplay(t, acpGrok, StartRequest{Permissions: PermissionPolicy{Mode: PermissionAsk}}, "grok/permission.ndjson")
+	if err := s.Prompt(context.Background(), Prompt{Text: "run"}); err != nil {
+		t.Fatal(err)
+	}
+	replay()
+	for {
+		ev := events.nextWhere(func(ev Event) bool { return ev.Type == EventPermission || ev.Type == EventResult })
+		if ev.Type == EventPermission {
+			t.Fatalf("grok sent a permission request: %+v", ev.Permission)
+		}
+		if ev.Result == nil || ev.Result.Subtype != "success" {
+			t.Fatalf("result: %+v", ev.Result)
+		}
+		return
+	}
+}
+
+// TestGrokSteerHolds proves a grok session holds mid-turn input.
+func TestGrokSteerHolds(t *testing.T) {
+	handler := func(p *coaTestPeer, f coaTestFrame) {
+		switch f.method() {
+		case "initialize":
+			p.reply(f.m["id"], map[string]any{"protocolVersion": 1, "authMethods": []any{}})
+		case "session/new":
+			p.reply(f.m["id"], map[string]any{"sessionId": "ses_1"})
+		}
+	}
+	_, ws, proto := coaTestStartACP(t, acpGrok, StartRequest{}, handler)
+	s := &acpSession{Session: ws, p: proto}
+	coaTestWatch(t, s.Events()).next(EventInit)
+	if err := s.Prompt(context.Background(), Prompt{Text: "run"}); err != nil {
+		t.Fatal(err)
+	}
+	d, err := s.Send(context.Background(), Prompt{Text: "late"})
+	if err != nil || d != DeliveryHeld {
+		t.Fatalf("send during a turn: %q %v, want held", d, err)
+	}
+}
+
+// TestGrokAuthProbe covers the grok models parser.
+func TestGrokAuthProbe(t *testing.T) {
+	parse := authProbes[Grok].parse
+	cases := []struct {
+		out   string
+		state AuthState
+	}{
+		{"You are not authenticated.\n\nAvailable models:", AuthMissing},
+		{"You are logged in with grok.com.\n\nAvailable models:", AuthOK},
+		{"something else", AuthUnknown},
+	}
+	for _, tc := range cases {
+		state, _, _ := parse(tc.out, nil)
+		if state != tc.state {
+			t.Fatalf("parse(%q) = %q, want %q", tc.out, state, tc.state)
+		}
 	}
 }

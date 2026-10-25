@@ -87,7 +87,7 @@ func matchTool(pattern, tool string) bool {
 	return pattern == tool
 }
 
-// TrustFlags are the harness flags that turn a permission mode into a
+// trustFlags are the harness flags that turn a permission mode into a
 // standing grant. They are derived from the policy, never always-on.
 func trustFlags(h Harness, p PermissionPolicy) []string {
 	if p.Normalized().Mode != PermissionAuto {
@@ -98,6 +98,26 @@ func trustFlags(h Harness, p PermissionPolicy) []string {
 		return []string{"--trust"}
 	case Pi:
 		return []string{"--approve"}
+	case OMP:
+		return []string{"--approval-mode", "yolo"}
+	case Grok:
+		// The session _meta.yoloMode also covers the wire; the flag keeps the
+		// mode on a resume that cannot send _meta.
+		return []string{"--always-approve"}
+	}
+	return nil
+}
+
+// acpPermissionFlags renders the modes a harness takes as a launch flag.
+// OMP has no native auto_edit mode that approves edits only, so it asks and
+// the policy approves the edit kinds.
+func acpPermissionFlags(h Harness, p PermissionPolicy) []string {
+	if h != OMP {
+		return nil
+	}
+	switch p.Normalized().Mode {
+	case PermissionAsk, PermissionAutoEdit:
+		return []string{"--approval-mode", "always-ask"}
 	}
 	return nil
 }

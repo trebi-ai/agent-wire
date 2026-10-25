@@ -106,9 +106,9 @@ func TestDetectRejectsBelowVersionFloor(t *testing.T) {
 // unsupported verdict, not an error.
 func TestDetectUnsupportedHarness(t *testing.T) {
 	rt := launchTestRuntime(t)
-	d, err := rt.Detect(context.Background(), Harness("grok"))
+	d, err := rt.Detect(context.Background(), Harness("no-such-harness"))
 	if err != nil {
-		t.Fatalf("Detect(grok): %v", err)
+		t.Fatalf("Detect(no-such-harness): %v", err)
 	}
 	if d.Supported {
 		t.Fatal("Supported = true for a harness with no driver")
@@ -240,6 +240,9 @@ func TestSemverAtLeastAndParse(t *testing.T) {
 		{got: "2.0.0", want: "garbage", ok: false},
 		{got: "", want: "2.0.0", ok: false},
 		{got: "2.0.0-beta.1", want: "2.0.0", ok: true},
+		{got: "omp/18.12.6", want: "18.0.0", ok: true},
+		{got: "grok 1.0.70 (f50904eaee6c) [stable]", want: "1.0.0", ok: true},
+		{got: "grok 0.9.9 (abc) [stable]", want: "1.0.0", ok: false},
 	}
 	for _, tc := range atLeast {
 		if got := semverAtLeast(tc.got, tc.want); got != tc.ok {
@@ -259,6 +262,9 @@ func TestSemverAtLeastAndParse(t *testing.T) {
 		{in: "2.0.0-beta.1", major: 2, minor: 0, patch: 0, ok: true},
 		{in: "2.0.0+build7", major: 2, minor: 0, patch: 0, ok: true},
 		{in: "2.0.0 (Claude Code)", major: 2, minor: 0, patch: 0, ok: true},
+		{in: "omp/18.12.6", major: 18, minor: 12, patch: 6, ok: true},
+		{in: "grok 1.0.70 (f50904eaee6c) [stable]", major: 1, minor: 0, patch: 70, ok: true},
+		{in: "codex-cli 0.155.1", major: 0, minor: 155, patch: 1, ok: true},
 		{in: "2", ok: false},
 		{in: "2.x", ok: false},
 		{in: "", ok: false},

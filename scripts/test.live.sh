@@ -17,7 +17,7 @@
 #   AGENTWIRE_LIVE_SKIP_NOAUTH  set to 1 to turn an auth failure into a skip.
 #   AGENTWIRE_LIVE_TIMEOUT      go test timeout. Default 30m.
 #
-# Harness names: claude, codex, opencode, pi, copilot, cursor, gemini, fake.
+# Harness names: claude, codex, opencode, pi, copilot, cursor, gemini, omp, grok, fake.
 #
 # The tier fails when ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN or
 # OPENAI_API_KEY is set, because a shared login is the supported path.
@@ -48,7 +48,7 @@ if [[ -z "${AGENTWIRE_LIVE}" ]]; then
 	echo "scripts/test.live.sh: no harness named." >&2
 	echo "usage: scripts/test.live.sh <harness> [harness ...]" >&2
 	echo "   or: AGENTWIRE_LIVE=all scripts/test.live.sh" >&2
-	echo "harnesses: claude codex opencode pi copilot cursor gemini fake" >&2
+	echo "harnesses: claude codex opencode pi copilot cursor gemini omp grok fake" >&2
 	exit 2
 fi
 

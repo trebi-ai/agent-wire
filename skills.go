@@ -45,7 +45,9 @@ func (rt *Runtime) applySkills(ctx context.Context, req *StartRequest, l *launch
 		return "", err
 	}
 	switch req.Harness {
-	case Claude:
+	case Claude, OMP, Grok:
+		// Each loads a Claude-layout plugin dir for this session: a manifest
+		// plus skills/<name>/SKILL.md links.
 		dir, err := rt.sessionDir(req, "plugin")
 		if err != nil {
 			return "", err

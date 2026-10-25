@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 )
@@ -55,7 +56,7 @@ func binName(h Harness) string {
 	switch h {
 	case Cursor:
 		return "cursor-agent"
-	case Claude, Codex, OpenCode, OpenCode2, Pi, Copilot, Gemini:
+	case Claude, Codex, OpenCode, OpenCode2, Pi, Copilot, Gemini, OMP, Grok:
 		return string(h)
 	}
 	return string(h)
@@ -165,6 +166,12 @@ func applyHomeEnv(req *StartRequest, l *launch) {
 		l.env["OPENCODE_CONFIG_DIR"] = req.Home
 	case Pi:
 		l.env["PI_CODING_AGENT_DIR"] = req.Home
+	case OMP:
+		// omp reads the same variable as pi.
+		l.env["PI_CODING_AGENT_DIR"] = req.Home
+	case Grok:
+		l.env["GROK_HOME"] = req.Home
+		disableGrokAutoUpdate(req.Home)
 	case Cursor:
 		l.env["CURSOR_CONFIG_DIR"] = req.Home
 		l.env["CURSOR_DATA_DIR"] = req.Home
@@ -175,6 +182,19 @@ func applyHomeEnv(req *StartRequest, l *launch) {
 		l.env["PI_SKIP_VERSION_CHECK"] = "1"
 		l.env["PI_TELEMETRY"] = "0"
 	}
+}
+
+// disableGrokAutoUpdate turns self-update off in an isolated grok home. An
+// existing config.toml belongs to the caller and is left as it is.
+func disableGrokAutoUpdate(home string) {
+	path := filepath.Join(home, "config.toml")
+	if _, err := os.Stat(path); err == nil {
+		return
+	}
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		return
+	}
+	_ = os.WriteFile(path, []byte("[cli]\nauto_update = false\n"), 0o600)
 }
 
 // applySessionArgs adds the session id where the harness takes it as a flag.
@@ -211,8 +231,10 @@ func applySessionArgs(req *StartRequest, l *launch) {
 func applyModelEffort(req *StartRequest, l *launch) {
 	if req.Model != "" {
 		switch req.Harness {
-		case Claude, Pi, Copilot, Gemini:
+		case Claude, Pi, Copilot, Gemini, OMP:
 			l.args = append(l.args, "--model", req.Model)
+		case Grok:
+			l.args = append(l.args, "-m", req.Model)
 		}
 	}
 	if req.Effort == "" {
@@ -223,7 +245,21 @@ func applyModelEffort(req *StartRequest, l *launch) {
 		l.args = append(l.args, "--effort", req.Effort)
 	case Codex:
 		l.args = append(l.args, "-c", "model_reasoning_effort="+req.Effort)
+	case OMP:
+		// omp passes every level through unchanged, including off, minimal,
+		// xhigh and auto.
+		l.args = append(l.args, "--thinking", req.Effort)
+	case Grok:
+		l.args = append(l.args, "--reasoning-effort", grokEffort(req.Effort))
 	}
+}
+
+// grokEffort maps the shared max level onto the highest grok offers.
+func grokEffort(effort string) string {
+	if effort == "max" {
+		return "xhigh"
+	}
+	return effort
 }
 
 // applyPermissionArgs renders the policy where the harness takes it as a flag.
@@ -231,6 +267,7 @@ func applyModelEffort(req *StartRequest, l *launch) {
 // library for each request.
 func applyPermissionArgs(req *StartRequest, l *launch) {
 	l.args = append(l.args, trustFlags(req.Harness, req.Permissions)...)
+	l.args = append(l.args, acpPermissionFlags(req.Harness, req.Permissions)...)
 	if req.Harness == Claude {
 		// The CLI answers prompts itself unless the host callback is enabled:
 		// without `stdio` it never sends can_use_tool (C.4). This is not a

@@ -25,26 +25,39 @@ func semverAtLeast(got, want string) bool {
 }
 
 // parseSemver reads major.minor[.patch] from a version line, ignoring a
-// leading v, a pre-release suffix and trailing text.
+// leading v, a name prefix such as "grok " or "omp/", a pre-release suffix
+// and trailing text.
 func parseSemver(s string) (major, minor, patch int, ok bool) {
-	s = strings.TrimPrefix(firstToken(s), "v")
-	if i := strings.IndexAny(s, "-+"); i > 0 {
-		s = s[:i]
-	}
-	parts := strings.Split(s, ".")
-	if len(parts) < 2 {
-		return 0, 0, 0, false
-	}
-	values := []*int{&major, &minor, &patch}
-	for i, part := range parts {
-		if i >= len(values) {
-			break
+	for _, token := range strings.Fields(s) {
+		major, minor, patch = 0, 0, 0
+		token = strings.Trim(token, `"'()[],;`)
+		if i := strings.LastIndexByte(token, '/'); i >= 0 {
+			token = token[i+1:]
 		}
-		n, err := strconv.Atoi(part)
-		if err != nil {
-			return 0, 0, 0, false
+		token = strings.TrimPrefix(token, "v")
+		if i := strings.IndexAny(token, "-+"); i > 0 {
+			token = token[:i]
 		}
-		*values[i] = n
+		parts := strings.Split(token, ".")
+		if len(parts) < 2 {
+			continue
+		}
+		values := []*int{&major, &minor, &patch}
+		parsed := true
+		for i, part := range parts {
+			if i >= len(values) {
+				break
+			}
+			n, err := strconv.Atoi(part)
+			if err != nil {
+				parsed = false
+				break
+			}
+			*values[i] = n
+		}
+		if parsed {
+			return major, minor, patch, true
+		}
 	}
-	return major, minor, patch, true
+	return 0, 0, 0, false
 }

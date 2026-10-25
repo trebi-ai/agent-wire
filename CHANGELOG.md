@@ -4,6 +4,30 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.7.0] - 2026-10-24
+
+### Added
+
+- `OMP` (`agentwire.OMP`, binary `omp`) drives `omp acp` as a new ACP kind. It takes the model and thinking level at launch, instructions through `--append-system-prompt`, skills through `--plugin-dir`, and the standard session config options for a live model or thinking change.
+- `Grok` (`agentwire.Grok`, binary `grok`) drives `grok agent --no-leader stdio` as a new ACP kind. Instructions travel in `session/new` `_meta.rules`; the model and reasoning effort start as `-m` and `--reasoning-effort`, and a live change uses the session config options.
+- ACP: the model list comes from the standard `configOptions` list (`category: "model"`), not only the older `models` block. grok also lists its models in the `initialize` `_meta.modelState`, so its model probe needs no session and no login.
+- ACP: `SetModel` sends `session/set_config_option` when the session offers a model option, and keeps `session/set_model` otherwise.
+- ACP: `StartRequest.Effort` reaches the session `thought_level` config option (grok `reasoning_effort`); `max` maps to the highest offered level.
+- ACP: steering through `_session/steering` when `initialize` advertises `_meta.steering.supported`. A refusal returns `ErrUnsupported`, so `Send` holds the prompt.
+- ACP: per-kind `session/new`, `session/resume` and `session/load` `_meta` blocks. grok sends `rules`, `yoloMode` and the opt-in `autoMode`.
+- ACP: grok turn usage from the prompt result `_meta`.
+
+### Fixed
+
+- Version parsing accepts a name prefix (`omp/18.12.6`, `grok 1.0.70 (…)`, `codex-cli 0.155.1`), so the version floors work for every vendor line.
+- JSON-RPC errors append the reason in `error.data`, including a string and the `message`, `details`, `detail` and `reason` fields, so `ClassifyFor` sees the vendor text.
+- ACP: a failed session open keeps the login classification (`not_logged_in`) instead of a generic protocol failure. grok never runs `authenticate` from the library, because that method can start a browser or device login.
+
+### Notes
+
+- grok 1.0.70 does not send `session/request_permission` on stdio, so `Features.Permissions` is false for it.
+- omp and grok homes isolate auth as well as sessions: a fresh `PI_CODING_AGENT_DIR` or `GROK_HOME` has no login. Use an empty `StartRequest.Home` for "use existing login".
+
 ## [v0.6.2] - 2026-10-18
 
 ### Fixed

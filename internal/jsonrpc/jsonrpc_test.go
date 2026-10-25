@@ -418,3 +418,34 @@ func TestCallIntoReturnsRPCError(t *testing.T) {
 		t.Fatalf("err = %+v, want code -32000 and message %q", rpcErr, "usage limit reached")
 	}
 }
+
+// TestErrorDataText proves the vendor reason in error.data reaches the error
+// text, whether it is a string or an object field.
+func TestErrorDataText(t *testing.T) {
+	cases := []struct {
+		name string
+		data string
+		want []string
+	}{
+		{"no data", "", []string{"jsonrpc error -32000: boom"}},
+		{"string", `"Authentication required"`, []string{"jsonrpc error -32000: boom", "Authentication required"}},
+		{"message", `{"message":"quota exceeded","code":"limit"}`, []string{"quota exceeded"}},
+		{"details", `{"details":"Unknown ACP model: nope/nope"}`, []string{"Unknown ACP model: nope/nope"}},
+		{"reason", `{"reason":"plan expired"}`, []string{"plan expired"}},
+		{"other shape", `{"status":402}`, []string{`{"status":402}`}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := &Error{Code: -32000, Message: "boom"}
+			if tc.data != "" {
+				e.Data = json.RawMessage(tc.data)
+			}
+			got := e.Error()
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Fatalf("Error() = %q, want it to contain %q", got, want)
+				}
+			}
+		})
+	}
+}

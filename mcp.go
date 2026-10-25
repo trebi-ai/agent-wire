@@ -82,7 +82,7 @@ func (rt *Runtime) applyMCPServers(req *StartRequest, l *launch) error {
 			map[string]any{"mcpServers": claudeMCPServers(req.MCPServers)}); err != nil {
 			return err
 		}
-	case Copilot, Cursor, Gemini:
+	case Copilot, Cursor, Gemini, OMP, Grok:
 		// The ACP driver puts the servers in session/new, session/load or
 		// session/resume.
 	}

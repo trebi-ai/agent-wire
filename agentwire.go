@@ -1,6 +1,6 @@
 // Package agentwire drives vendor coding-agent CLIs as child processes over
 // their structured protocols: Claude stream-json, Codex app-server, OpenCode
-// serve, ACP (Copilot, Cursor, Gemini) and pi RPC.
+// serve, ACP (Copilot, Cursor, Gemini, omp, grok) and pi RPC.
 //
 // One event model covers every harness. The library knows vendors; it does not
 // know consumers. Vendor flags, env vars, config formats, protocol quirks and
@@ -53,6 +53,8 @@ const (
 	Copilot   Harness = "copilot"
 	Cursor    Harness = "cursor"
 	Gemini    Harness = "gemini"
+	OMP       Harness = "omp"
+	Grok      Harness = "grok"
 	Fake      Harness = "fake"
 	// Native is the in-process harness the native module serves. It is not
 	// in New's built-in driver table: a consumer registers it with
@@ -62,7 +64,7 @@ const (
 
 // Harnesses lists every harness the library can drive a wire for.
 func Harnesses() []Harness {
-	return []Harness{Claude, Codex, OpenCode, OpenCode2, Pi, Copilot, Cursor, Gemini, Fake, Native}
+	return []Harness{Claude, Codex, OpenCode, OpenCode2, Pi, Copilot, Cursor, Gemini, OMP, Grok, Fake, Native}
 }
 
 // Options configures a Runtime.
@@ -278,6 +280,8 @@ func New(opts Options) *Runtime {
 		Copilot:   acpDriver{rt, acpCopilot},
 		Cursor:    acpDriver{rt, acpCursor},
 		Gemini:    acpDriver{rt, acpGemini},
+		OMP:       acpDriver{rt, acpOMP},
+		Grok:      acpDriver{rt, acpGrok},
 		Fake:      FakeDriver{},
 	}
 	rt.drivers = map[Harness]Driver{}

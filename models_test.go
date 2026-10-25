@@ -794,3 +794,139 @@ func TestSendStates(t *testing.T) {
 		events.next(EventExit)
 	})
 }
+
+// TestACPConfigOptionModels proves the standard ACP config option list gives
+// the model list and the current model.
+func TestACPConfigOptionModels(t *testing.T) {
+	newReply := mdTestFixture(t, "omp_session_new.json")
+	handler := func(p *coaTestPeer, f coaTestFrame) {
+		switch f.method() {
+		case "session/new":
+			p.reply(f.m["id"], json.RawMessage(newReply))
+		default:
+			coaTestACPAgent(p, f)
+		}
+	}
+	_, ws, proto := coaTestStartACP(t, acpOMP, StartRequest{}, handler)
+	s := &acpSession{Session: ws, p: proto}
+	coaTestWatch(t, s.Events()).next(EventInit)
+
+	models := s.Models()
+	want := []string{"opencode-go/deepseek-v4.1-flash", "opencode-go/beam-free", "opencode-go/cat-jam-free"}
+	if !slices.Equal(mdTestIDs(models), want) {
+		t.Fatalf("config option models = %v, want %v", mdTestIDs(models), want)
+	}
+	if got := mdTestDefault(models); got != "opencode-go/deepseek-v4.1-flash" {
+		t.Fatalf("default model = %q", got)
+	}
+	proto.mu.Lock()
+	options := append([]acpConfigOption(nil), proto.configOptions...)
+	proto.mu.Unlock()
+	if configOption(options, "model") == nil || configOption(options, "thought_level") == nil {
+		t.Fatalf("stored config options = %+v", options)
+	}
+}
+
+// TestACPSetModelConfigOption proves SetModel uses session/set_config_option
+// when the session offers the option, and keeps session/set_model otherwise.
+func TestACPSetModelConfigOption(t *testing.T) {
+	newReply := mdTestFixture(t, "omp_session_new.json")
+	var fixture struct {
+		ConfigOptions []any `json:"configOptions"`
+	}
+	if err := json.Unmarshal(newReply, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	handler := func(p *coaTestPeer, f coaTestFrame) {
+		switch f.method() {
+		case "session/new":
+			p.reply(f.m["id"], json.RawMessage(newReply))
+		case "session/set_config_option":
+			options := append([]any(nil), fixture.ConfigOptions...)
+			for _, raw := range options {
+				opt := raw.(map[string]any)
+				if opt["id"] == "model" {
+					opt["currentValue"] = f.params()["value"]
+				}
+			}
+			p.reply(f.m["id"], map[string]any{"configOptions": options})
+		default:
+			coaTestACPAgent(p, f)
+		}
+	}
+	peer, ws, proto := coaTestStartACP(t, acpOMP, StartRequest{}, handler)
+	s := &acpSession{Session: ws, p: proto}
+	coaTestWatch(t, s.Events()).next(EventInit)
+
+	if err := s.SetModel(context.Background(), "opencode-go/beam-free"); err != nil {
+		t.Fatal(err)
+	}
+	call := peer.waitMethod("session/set_config_option")
+	if call.params()["configId"] != "model" || call.params()["value"] != "opencode-go/beam-free" || call.params()["sessionId"] != "ses_omp_1" {
+		t.Fatalf("set_config_option params: %s", call.raw)
+	}
+	if got := mdTestDefault(s.Models()); got != "opencode-go/beam-free" {
+		t.Fatalf("current model after SetModel = %q", got)
+	}
+
+	// The older models block still takes session/set_model.
+	oldReply := mdTestFixture(t, "acp_session_new.json")
+	oldHandler := func(p *coaTestPeer, f coaTestFrame) {
+		switch f.method() {
+		case "session/new":
+			p.reply(f.m["id"], json.RawMessage(oldReply))
+		case "session/set_model":
+			p.reply(f.m["id"], map[string]any{})
+		default:
+			coaTestACPAgent(p, f)
+		}
+	}
+	oldPeer, oldWS, oldProto := coaTestStartACP(t, acpCursor, StartRequest{}, oldHandler)
+	old := &acpSession{Session: oldWS, p: oldProto}
+	coaTestWatch(t, old.Events()).next(EventInit)
+	if err := old.SetModel(context.Background(), "gpt-5.5"); err != nil {
+		t.Fatal(err)
+	}
+	if call := oldPeer.waitMethod("session/set_model"); call.params()["modelId"] != "gpt-5.5" {
+		t.Fatalf("set_model params: %s", call.raw)
+	}
+}
+
+// TestACPEffortConfigOption proves max maps onto the highest offered thought
+// level.
+func TestACPEffortConfigOption(t *testing.T) {
+	options := []any{
+		map[string]any{
+			"id": "reasoning_effort", "name": "Reasoning", "category": "thought_level",
+			"currentValue": "high",
+			"options": []any{
+				map[string]any{"value": "low", "name": "Low"},
+				map[string]any{"value": "medium", "name": "Medium"},
+				map[string]any{"value": "high", "name": "High"},
+				map[string]any{"value": "xhigh", "name": "Extra high"},
+			},
+		},
+	}
+	handler := func(p *coaTestPeer, f coaTestFrame) {
+		switch f.method() {
+		case "session/new":
+			p.reply(f.m["id"], map[string]any{"sessionId": "ses_1", "configOptions": options})
+		case "session/set_config_option":
+			if f.params()["configId"] != "reasoning_effort" || f.params()["value"] != "xhigh" {
+				t.Errorf("set_config_option params: %s", f.raw)
+			}
+			p.reply(f.m["id"], map[string]any{"configOptions": options})
+		default:
+			coaTestACPAgent(p, f)
+		}
+	}
+	peer, ws, proto := coaTestStartACP(t, acpGrok, StartRequest{Effort: "max"}, handler)
+	s := &acpSession{Session: ws, p: proto}
+	events := coaTestWatch(t, s.Events())
+	events.next(EventInit)
+	events.nextWhere(func(ev Event) bool { return ev.Type == EventStatus && strings.Contains(ev.Text, "effort") })
+	call := peer.waitMethod("session/set_config_option")
+	if call.params()["value"] != "xhigh" {
+		t.Fatalf("effort call: %s", call.raw)
+	}
+}

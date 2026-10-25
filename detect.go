@@ -82,6 +82,8 @@ type Detector interface {
 // A floor of "" means any version the binary reports.
 var versionFloors = map[Harness]string{
 	Claude: "2.0.0",
+	OMP:    "18.0.0",
+	Grok:   "1.0.0",
 }
 
 // featuresFor is the static per-harness capability table.
@@ -99,6 +101,13 @@ func featuresFor(h Harness) Features {
 	case Copilot, Cursor, Gemini:
 		// Models and SetModel work only when the agent offers a model list.
 		return Features{MCPInject: MCPSession, SkillsInject: SkillInstructions, Instructions: true, Attachments: true, Resume: true, Permissions: true, FS: true, Models: true, SetModel: true}
+	case OMP:
+		// Steer is advertised and proved by the live tier.
+		return Features{MCPInject: MCPSession, SkillsInject: SkillNative, Instructions: true, Attachments: true, Resume: true, Permissions: true, FS: true, Models: true, SetModel: true, Steer: true}
+	case Grok:
+		// grok 1.0.70 does not send session/request_permission on stdio, so
+		// the permission policy has nothing to answer.
+		return Features{MCPInject: MCPSession, SkillsInject: SkillNative, Instructions: true, Attachments: true, Resume: true, FS: true, Models: true, SetModel: true}
 	case Native:
 		return Features{MCPInject: MCPSession, SkillsInject: SkillNative, Instructions: true, Attachments: true, Resume: true, Permissions: true, FS: true}
 	case Fake:
@@ -298,6 +307,7 @@ var authEnvKeys = map[Harness][]string{
 	Codex:   {"OPENAI_API_KEY"},
 	Gemini:  {"GEMINI_API_KEY", "GOOGLE_API_KEY"},
 	Copilot: {"GITHUB_TOKEN", "GH_TOKEN"},
+	Grok:    {"XAI_API_KEY"},
 }
 
 // authProbe is one vendor login-status command.
@@ -369,6 +379,38 @@ var authProbes = map[Harness]authProbe{
 				return AuthMissing, "", true
 			}
 			return AuthOK, "", true
+		},
+	},
+	OMP: {
+		// The configured providers, never a credential. An empty list means
+		// no provider is logged in.
+		args: []string{"models", "--json"},
+		parse: func(out string, err error) (AuthState, string, bool) {
+			var payload struct {
+				Models []json.RawMessage `json:"models"`
+			}
+			if json.Unmarshal([]byte(out), &payload) == nil {
+				if len(payload.Models) > 0 {
+					return AuthOK, fmt.Sprintf("%d models", len(payload.Models)), true
+				}
+				return AuthMissing, "", true
+			}
+			_ = err
+			return AuthUnknown, "", false
+		},
+	},
+	Grok: {
+		args: []string{"models"},
+		parse: func(out string, err error) (AuthState, string, bool) {
+			low := strings.ToLower(out)
+			switch {
+			case strings.Contains(low, "not authenticated"):
+				return AuthMissing, "", true
+			case strings.Contains(low, "logged in"):
+				return AuthOK, "", true
+			}
+			_ = err
+			return AuthUnknown, "", false
 		},
 	},
 }

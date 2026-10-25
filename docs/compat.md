@@ -9,7 +9,7 @@ Four labels are used:
 - **refuted `<version>` (`<date>`)**: the spike ran and the result contradicts the plan.
 - **not run**: the spike did not exercise the surface. The blocker and the exact command are written out.
 
-The Phase 0 spike ran on 2026-09-22 against the vendor binaries installed on this machine: `claude` 2.1.280, `codex` codex-cli 0.155.1, `opencode` 1.18.29, `pi` 0.84.1, `cursor-agent` 2026.09.18-9a7762b. `copilot` and `gemini` are not installed. No check that spends a live model turn ran; each one is labelled **not run** with its command.
+The Phase 0 spike ran on 2026-09-22 against the vendor binaries installed on this machine: `claude` 2.1.280, `codex` codex-cli 0.155.1, `opencode` 1.18.29, `pi` 0.84.1, `cursor-agent` 2026.09.18-9a7762b. `copilot` and `gemini` are not installed. No check that spends a live model turn ran; each one is labelled **not run** with its command. A second spike on 2026-10-24 covered `omp` 18.12.6 and `grok` 1.0.70. It ran live turns for both; their sections record the results.
 
 ## Claude Code
 
@@ -182,6 +182,72 @@ Protocol surfaces the library depends on:
 
 Cursor is started with `cursor-agent create-chat` before the ACP handshake. Copilot resume uses `--resume <id>` plus ACP resume. Both are verified in code. The spike confirms that `create-chat` returns a chat id, but that id does not load through `session/load` on cursor-agent 2026.09.18-9a7762b, so the fresh-id `session/load` path of the plan needs a live turn before a tag.
 
+## omp (Oh My Pi)
+
+| Item | Value |
+|---|---|
+| Binary | `omp` (`omp/18.12.6`, 2026-10-24) |
+| Protocol | ACP (JSON-RPC over stdin and stdout), entry point `omp acp` |
+| Verified version | 18.12.6 (2026-10-24) |
+| Version floor | 18.0.0 |
+
+omp is the pi fork from can1357. `omp acp` parses the root flags (`--append-system-prompt`, `--approval-mode`, `--thinking`, `--model`), so the library uses the ACP driver, not the pi RPC wire. The pi RPC driver stays for `pi`.
+
+Protocol surfaces the library depends on:
+
+| Surface | Status |
+|---|---|
+| `initialize` with `protocolVersion: 1` and `clientCapabilities` | confirmed omp/18.12.6 (2026-10-24): the result carries `agentCapabilities.loadSession: true` and `sessionCapabilities` (`fork`, `resume`, `close`), `authMethods: [{id: "agent"}]`, and `_meta.steering.supported: true` |
+| `session/new` with `mcpServers` | confirmed: the result returns `configOptions` for `mode`, `model` and `thinking`, and `_meta.steering`. A bad MCP server is reported as an `agent_message_chunk` warning; the session stays open |
+| `session/prompt`, `session/cancel` | confirmed: a turn produced `agent_message_chunk`, `agent_thought_chunk`, `tool_call`, `tool_call_update`, `usage_update`, `session_info_update` and `available_commands_update`; `session/cancel` returned `stopReason: "cancelled"` and the result ended the turn |
+| `session/request_permission` and the permission reply | confirmed with `--approval-mode always-ask`: one request with four options (`allow_once`, `allow_always`, `reject_once`, `reject_always`); `allow_once` continued the turn |
+| `auto_edit` approval mode | not run: omp refuses to switch the mode in a live session, and the spike did not start a separate session for it. The driver stays on `always-ask` plus the policy |
+| `yolo` approval mode (`--approval-mode yolo`) | confirmed: no permission request, and the tool turn completed |
+| `_session/steering` | confirmed: `initialize` advertises it, a steer during a shell tool joined the turn, and a steer before the turn returned a message that becomes `ErrUnsupported` (recorded in `testdata/acp/omp/steering.ndjson`) |
+| `session/set_config_option` for `model` and `thinking` | confirmed: `configId` is `model` or `thinking`, the value is a string (`provider/model`, or a thinking level), and the reply returns the full updated option list |
+| `session/resume` | confirmed: the resumed session kept the prior turn in its history |
+| `--append-system-prompt` instructions | confirmed: a marker instruction reached the model on the first turn |
+| `--plugin-dir` skills | confirmed: `/skill:agentwire-live-marker` listed the injected skill, and a turn read its marker |
+| `--allow-home` | confirmed flag in `omp acp --help`; not exercised live |
+| `--cwd` and the automatic temp-dir switch when started in `$HOME` | recorded from the 18.12.6 source; not observed live |
+| `PI_CODING_AGENT_DIR` home isolation | confirmed: a fresh home lists 0 models and has no login. `--profile` isolates auth the same way |
+| Login probe (`omp models --json`) | confirmed: a logged-in machine returns the provider/model list (80 models at the spike); a fresh home returns an empty list |
+| `fs.readTextFile` and `fs.writeTextFile` | not exercised: no `fs/*` request arrived during the tool turn. The shared ACP handler serves them, so `Features.FS` is true like the other ACP kinds |
+
+Model ids are `provider/model` (`opencode-go/deepseek-v4.1-flash`). The model config option lists 80 entries on this machine, and `--model` travels straight into the session config.
+
+## Grok (xAI)
+
+| Item | Value |
+|---|---|
+| Binary | `grok` (`grok 1.0.70 (f50904eaee6c) [stable]`, 2026-10-24) |
+| Protocol | ACP (JSON-RPC over stdin and stdout), entry point `grok agent --no-leader stdio` |
+| Verified version | 1.0.70 (2026-10-24) |
+| Version floor | 1.0.0 |
+
+Grok Build is documented to integrate through ACP (Zed, agent-shell, Endo, Verun). The one-shot `grok -p --output-format streaming-json` is not used.
+
+Protocol surfaces the library depends on:
+
+| Surface | Status |
+|---|---|
+| `initialize` | confirmed logged out (2026-10-24): `authMethods: [{id: "grok.com"}]` and `_meta.modelState` with two models. Logged in: `authMethods` adds `cached_token`, and `_meta.modelState` lists four models |
+| `session/new` with `mcpServers` and `_meta` | confirmed: `_meta.rules` reached the model (marker text), `_meta.yoloMode` is accepted with `--always-approve`, and the result returns `configOptions` (`model`, `reasoning_effort`) plus the `models` header. A bad MCP server logs `Failed to spawn MCP server '<name>'` and does not close the session |
+| `session/new` without a login | confirmed: `-32000 "Authentication required"` with `data: "no auth method id provided"` |
+| `authenticate` | not run: the spike used `grok login --device-auth`. The library never calls it, because it can start a browser or device login |
+| `session/prompt`, `session/cancel` | confirmed: all the session update variants arrived, plus `x.ai/mcp/server_status` and `x.ai/session/update`; `session/cancel` returned `stopReason: "cancelled"` |
+| `session/request_permission` and the permission reply | refuted on 1.0.70: no request arrived in `default` or ask mode, including an isolated `GROK_HOME` with `[ui] permission_mode = "default"` and `_meta.yoloMode: false`; the tool ran without approval. `Features.Permissions` is false |
+| `--always-approve` | confirmed: no approval, and a shell tool turn completed |
+| `session/set_config_option` for `model` and `reasoning_effort` | confirmed: the value is a string, and the reply returns the updated option list. An object value (`{"value": …}`) is rejected with `-32602`. A bad model id answers `data: "unknown model id"` |
+| Steering | refuted: `initialize` advertises no steering, and a second prompt during a turn got no reply within 30 seconds (the vendor queues it). `Features.Steer` is false |
+| `session/resume` and `session/load` | confirmed: both kept the prior turn in the history |
+| `_meta.rules` instructions | confirmed: a marker instruction reached the model |
+| `--plugin-dir` skills | confirmed: the injected skill listed and its marker was read |
+| `GROK_HOME` home isolation | confirmed for auth: a fresh home is not authenticated, and copying `auth.json` restores the login. Config isolation is partial: a user MCP server still appeared under the fresh home |
+| `--no-leader` | accepted; without it a shared leader can outlive the session. The spike did not compare the two |
+| Login probe (`grok models`) | confirmed: it prints "You are not authenticated." when logged out and "You are logged in with grok.com." when logged in |
+| Error `data` text | confirmed for a bad model id. The HTTP 402 plan case was not forced; the library appends `error.data` text and a unit test covers it |
+
 ## Models and mid-turn input
 
 Added in v0.4.0. "Live" means the live tier (`live/models_test.go`) passed on this machine on 2026-09-27. `TestLiveModels` lists the models, runs a turn, calls `SetModel`, and runs a second turn. `TestLiveSteer` sends `Steer` while a shell tool runs, and checks that one turn took both inputs.
@@ -195,12 +261,17 @@ Added in v0.4.0. "Live" means the live tier (`live/models_test.go`) passed on th
 | pi | `get_available_models` on `pi --mode rpc --no-session`, default from `get_state` | `set_model {provider, modelId}`. The id must be `provider/model` | `steer {message}`. Pi delivers it after the running tool calls | 0.84.1 | live: list, set. Steer is in code and in the unit tier, but `Features.Steer` is false: the only provider on this machine (xAI) has an expired login, so no live turn ran |
 | Cursor | `session/new` result, `models.availableModels` and `currentModelId` | `session/set_model` | none | 2026.09.26-dd393fe | live: list, set. The set also changes the default model of the Cursor account |
 | Copilot, Gemini | as Cursor, when the agent offers a model list | as Cursor. Without a list, `SetModel` returns `ErrUnsupported` | none | not installed | not run |
+| omp | `configOptions` model option in the `session/new` result (`provider/model` ids), default from `currentValue` | `session/set_config_option` (`configId: "model"`, string value) | `_session/steering` while a turn runs. A refusal returns `ErrUnsupported`, so `Send` holds the input | 18.12.6 | live: list, set, steer. After `SetModel` the config echoed the new value and the next turn succeeded. A steer during a shell tool joined the turn |
+| Grok | `initialize` `_meta.modelState.availableModels`, and the `session/new` `configOptions` plus `models` | `session/set_config_option` (`configId: "model"`, string value) | none. A second prompt during a turn is queued by the vendor, so `Features.Steer` is false and `Send` holds the input | 1.0.70 | live: list, set, steer hold. The model probe needs no session and works logged out. No permission request arrives on stdio |
 
 Notes:
 
 - The model lister never calls ACP `authenticate`, so a list call cannot start a login flow.
 - OpenCode 2 has a `POST /api/session/<id>/inbox/<inboxID>/steer` route. The library does not use it yet.
 - Cursor model ids carry parameters, for example `grok-4.7[context=256k,reasoning_effort=high,fast=true]`. Pass the id as the list gives it.
+- omp model ids are `provider/model`. The `thinking` config option takes a level string (minimal, low, medium, high, max on 18.12.6), and `--thinking` at launch reaches the same option.
+- Grok lists four models on this account (`grok-4.7`, `grok-4.7-build-fast`, `grok-4.6`, `grok-4.5`); the default is `grok-4.7`. `reasoning_effort` accepts `low`, `medium`, `high`, `xhigh`; `Effort: "max"` maps to `xhigh`.
+- A `SetModel` probe must not call `authenticate`: omp has one auth method (`agent`), and grok's `grok.com` method can start a browser or device login.
 
 ## fake
 
@@ -213,6 +284,8 @@ Notes:
 The fake driver exists for consumer tests. It is always supported, and `Runtime.Detect` agrees: it reports the fake as `supported=true auth=ok` on 2026-09-22 with no binary to find on `PATH`.
 
 ## Phase 0 spike procedure
+
+The omp and grok spike of 2026-10-24 followed this procedure. Their sections above record the results, and `testdata/acp/omp/` and `testdata/acp/grok/` hold the frames.
 
 Run these commands on a current vendor release before the first tag. Each command confirms one item that this file marked unverified before the spike. Record the output in this file, with the exact version and date. The results below were recorded on 2026-09-22.
 
@@ -479,6 +552,13 @@ $ cursor-agent create-chat
 - OpenCode skills load from `<config dir>/skill/` and from `<config dir>/skills/`. Both names work, so the driver does not have to guess.
 - `claude --permission-prompt-tool` is hidden from `--help`, and `--permission-mode default` is accepted although the help lists other choices. A flag-presence probe under-reports both. Do not treat the `--help` output as the full flag list.
 - `Runtime.Detect` reports `auth=unknown` for pi and cursor, so the doctor cannot tell a logged-in pi from a logged-out one.
+- grok 1.0.70 never sends `session/request_permission` on stdio, in `default` or ask mode. `Features.Permissions` is false, so the client cannot enforce ask or auto_edit for it; check a newer release before treating grok as approvable.
+- grok `session/set_config_option` takes a plain string value. The object value from the plan is rejected with `-32602`.
+- grok turn usage is in the prompt result `_meta` (top-level and `_meta.usage`), not in `result.usage`.
+- omp and grok model lists come from the standard `configOptions`, not only `models`. grok also fills `initialize` `_meta.modelState`, so its model probe opens no session and needs no login.
+- omp asks with `--approval-mode always-ask`; the spike did not prove `auto_edit`, so the driver keeps the policy on top of always-ask. `yolo` is the auto mode.
+- `PI_CODING_AGENT_DIR` and `GROK_HOME` isolate the login as well as the sessions. A caller that wants "use existing login" must leave `StartRequest.Home` empty, and a detection probe must run the vendor's own authenticated command (`omp models --json`, `grok models`).
+- omp is ACP only; the pi RPC driver stays for `pi`.
 
 ## Rule for a failed spike
 

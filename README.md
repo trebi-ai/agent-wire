@@ -7,7 +7,7 @@ agentwire spawns the vendor binary that is already on the machine and speaks the
 - Claude `stream-json` over stdin and stdout.
 - Codex `app-server` JSON-RPC over stdin and stdout.
 - OpenCode `serve` REST plus an SSE event stream, for 1.x and for the 2.x beta.
-- ACP over stdin and stdout, for Copilot, Cursor and Gemini.
+- ACP over stdin and stdout, for Copilot, Cursor, Gemini, omp and grok.
 - pi RPC (NDJSON) over stdin and stdout.
 
 The wire is Go-native. The official vendor SDKs are the reference implementation and the fixture oracle at build and test time only. They are never a runtime dependency. There is no Node, no sidecar and no vendored SDK.
@@ -30,6 +30,8 @@ Every cache, server pool, version record and crash ledger hangs off one `Runtime
 | Copilot | `agentwire.Copilot` | `copilot` | ACP over stdin and stdout |
 | Cursor | `agentwire.Cursor` | `cursor-agent` | ACP over stdin and stdout |
 | Gemini | `agentwire.Gemini` | `gemini` | ACP over stdin and stdout |
+| omp | `agentwire.OMP` | `omp` | ACP over stdin and stdout (`omp acp`) |
+| Grok | `agentwire.Grok` | `grok` | ACP over stdin and stdout (`grok agent --no-leader stdio`) |
 | fake | `agentwire.Fake` | shell script | agentwire NDJSON, for tests |
 | native | `agentwire.Native` | none (in process) | the `native` module: one provider stream per turn, registered with `Runtime.SetDriver` |
 
@@ -153,7 +155,7 @@ case agentwire.DeliveryHeld:
 
 `Prompt` during a turn returns `ErrTurnActive`, except on Claude, which queues the second prompt itself.
 
-`Steerer` is the low-level call behind `Send`. It returns `ErrNoActiveTurn` when no turn runs, and `ErrUnsupported` when the vendor refuses the input.
+`Steerer` is the low-level call behind `Send`. It returns `ErrNoActiveTurn` when no turn runs, and `ErrUnsupported` when the vendor refuses the input. omp steers through `_session/steering`; grok advertises no steering, so its input is held.
 
 ## Extension points
 

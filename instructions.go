@@ -31,6 +31,14 @@ func (rt *Runtime) applyInstructions(ctx context.Context, req *StartRequest, l *
 			l.args = append(l.args, "--append-system-prompt", text)
 			l.instructions = ""
 		}
+	case OMP:
+		// omp acp parses every root flag, so the text travels as one argv
+		// element.
+		l.args = append(l.args, "--append-system-prompt", text)
+		l.instructions = ""
+	case Grok:
+		// grok takes the text as session/new _meta.rules; the driver moves it
+		// out of l.instructions and sends it on the wire.
 	case Fake:
 		l.instructions = ""
 	}

@@ -30,10 +30,38 @@ func (e *Error) Error() string {
 	if e == nil {
 		return ""
 	}
-	if len(e.Data) > 0 {
-		return fmt.Sprintf("jsonrpc error %d: %s (%s)", e.Code, e.Message, string(e.Data))
+	if detail := e.DataText(); detail != "" {
+		return fmt.Sprintf("jsonrpc error %d: %s: %s", e.Code, e.Message, detail)
 	}
 	return fmt.Sprintf("jsonrpc error %d: %s", e.Code, e.Message)
+}
+
+// DataText is the human text of the error data. A vendor sends a plain
+// string, or an object that carries the reason in message, details, detail or
+// reason. Other shapes keep their JSON, so nothing is lost from the text a
+// classifier reads.
+func (e *Error) DataText() string {
+	if e == nil || len(e.Data) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(e.Data, &s) == nil {
+		return s
+	}
+	var obj struct {
+		Message string `json:"message"`
+		Details string `json:"details"`
+		Detail  string `json:"detail"`
+		Reason  string `json:"reason"`
+	}
+	if json.Unmarshal(e.Data, &obj) == nil {
+		for _, candidate := range []string{obj.Message, obj.Details, obj.Detail, obj.Reason} {
+			if candidate != "" {
+				return candidate
+			}
+		}
+	}
+	return string(e.Data)
 }
 
 // ErrTransportClosed reports a call attempted after the transport died.

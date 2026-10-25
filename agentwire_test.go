@@ -25,8 +25,8 @@ func TestRuntimeZeroOptionsIsUsable(t *testing.T) {
 	if d, ok := rt.Driver(Fake); !ok || d.Name() != string(Fake) {
 		t.Fatalf("Driver(fake) = %v ok=%v, want the fake driver", d, ok)
 	}
-	if _, ok := rt.Driver(Harness("grok")); ok {
-		t.Fatal("Driver(grok) is ok, but grok has no proven wire")
+	if _, ok := rt.Driver(Harness("no-such-harness")); ok {
+		t.Fatal("Driver(no-such-harness) is ok, but it has no proven wire")
 	}
 	for _, h := range Harnesses() {
 		if h == Native {
@@ -44,14 +44,14 @@ func TestRuntimeZeroOptionsIsUsable(t *testing.T) {
 func TestRuntimeHarnessList(t *testing.T) {
 	t.Parallel()
 	list := Harnesses()
-	if len(list) != 10 {
-		t.Fatalf("Harnesses() = %v, want 10 entries", list)
+	if len(list) != 12 {
+		t.Fatalf("Harnesses() = %v, want 12 entries", list)
 	}
 	set := map[Harness]bool{}
 	for _, h := range list {
 		set[h] = true
 	}
-	for _, want := range []Harness{Claude, Codex, OpenCode, OpenCode2, Pi, Copilot, Cursor, Gemini, Fake, Native} {
+	for _, want := range []Harness{Claude, Codex, OpenCode, OpenCode2, Pi, Copilot, Cursor, Gemini, OMP, Grok, Fake, Native} {
 		if !set[want] {
 			t.Errorf("Harnesses() misses %q", want)
 		}
