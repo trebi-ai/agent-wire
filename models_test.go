@@ -924,9 +924,19 @@ func TestACPEffortConfigOption(t *testing.T) {
 	s := &acpSession{Session: ws, p: proto}
 	events := coaTestWatch(t, s.Events())
 	events.next(EventInit)
-	events.nextWhere(func(ev Event) bool { return ev.Type == EventStatus && strings.Contains(ev.Text, "effort") })
+	if ev := events.nextWhere(func(ev Event) bool { return ev.Type == EventStatus && strings.Contains(ev.Text, "effort") }); ev.Text != "effort xhigh" {
+		t.Fatalf("effort status = %q, want the value sent", ev.Text)
+	}
 	call := peer.waitMethod("session/set_config_option")
 	if call.params()["value"] != "xhigh" {
 		t.Fatalf("effort call: %s", call.raw)
+	}
+
+	// A level the session does not offer sends nothing and says so.
+	_, ws, _ = coaTestStartACP(t, acpGrok, StartRequest{Effort: "minimal"}, handler)
+	events = coaTestWatch(t, ws.Events())
+	events.next(EventInit)
+	if ev := events.nextWhere(func(ev Event) bool { return ev.Type == EventStatus && strings.Contains(ev.Text, "effort") }); ev.Text != "effort minimal not offered" {
+		t.Fatalf("effort status = %q, want not offered", ev.Text)
 	}
 }

@@ -203,7 +203,7 @@ Protocol surfaces the library depends on:
 | `session/request_permission` and the permission reply | confirmed with `--approval-mode always-ask`: one request with four options (`allow_once`, `allow_always`, `reject_once`, `reject_always`); `allow_once` continued the turn |
 | `auto_edit` approval mode | not run: omp refuses to switch the mode in a live session, and the spike did not start a separate session for it. The driver stays on `always-ask` plus the policy |
 | `yolo` approval mode (`--approval-mode yolo`) | confirmed: no permission request, and the tool turn completed |
-| `_session/steering` | confirmed: `initialize` advertises it, a steer during a shell tool joined the turn, and a steer before the turn returned a message that becomes `ErrUnsupported` (recorded in `testdata/acp/omp/steering.ndjson`) |
+| `_session/steering` | confirmed: `initialize` advertises it, a steer during a shell tool joined the turn, and a steer before the turn returned a message that becomes `ErrUnsupported` (recorded in `testdata/acp/omp/steer.ndjson`) |
 | `session/set_config_option` for `model` and `thinking` | confirmed: `configId` is `model` or `thinking`, the value is a string (`provider/model`, or a thinking level), and the reply returns the full updated option list |
 | `session/resume` | confirmed: the resumed session kept the prior turn in its history |
 | `--append-system-prompt` instructions | confirmed: a marker instruction reached the model on the first turn |

@@ -341,16 +341,16 @@ func looksLikeUUID(s string) bool {
 func stripACPSessionArgs(args []string) []string {
 	var out []string
 	for i := 0; i < len(args); i++ {
-		a := args[i]
-		name, _, hasValue := strings.Cut(a, "=")
-		switch {
-		case name == "--session-id" || name == "-s" || name == "--resume" || name == "-r" || name == "--restore" || name == "--continue" || name == "-c":
-			if !hasValue && name != "--continue" && name != "-c" {
+		name, _, hasValue := strings.Cut(args[i], "=")
+		switch name {
+		case "--continue", "-c":
+		case "--session-id", "-s", "--resume", "-r", "--restore":
+			// The --resume value is optional, so a flag after it stays.
+			if !hasValue && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
 				i++
 			}
-		case strings.HasPrefix(a, "--session-id=") || strings.HasPrefix(a, "--resume=") || strings.HasPrefix(a, "--restore="):
 		default:
-			out = append(out, a)
+			out = append(out, args[i])
 		}
 	}
 	return out
@@ -497,10 +497,13 @@ func (p *acpProtocol) Handshake(ctx context.Context, _ *wire.Writer) ([]Event, e
 	}
 	if p.effort != "" && p.kind.effortOption() {
 		// A model change can reset the effort, so it goes after the model.
-		if err := p.applyEffort(ctx, p.effort); err != nil {
+		switch value, err := p.applyEffort(ctx, p.effort); {
+		case err != nil:
 			events = append(events, Event{Type: EventStatus, Status: StatusRunning, Text: "effort not applied: " + err.Error()})
-		} else {
-			events = append(events, Event{Type: EventStatus, Status: StatusRunning, Text: "effort " + p.effort})
+		case value == "":
+			events = append(events, Event{Type: EventStatus, Status: StatusRunning, Text: "effort " + p.effort + " not offered"})
+		default:
+			events = append(events, Event{Type: EventStatus, Status: StatusRunning, Text: "effort " + value})
 		}
 	}
 	return events, nil
@@ -927,28 +930,29 @@ func (p *acpProtocol) applyModel(ctx context.Context, model string) error {
 	return nil
 }
 
-// applyEffort sets the thought level through the session config option. An
-// option that does not offer the wanted level is left alone.
-func (p *acpProtocol) applyEffort(ctx context.Context, effort string) error {
+// applyEffort sets the thought level through the session config option and
+// returns the value it sent. It returns "" when the session offers no such
+// option or not the wanted level.
+func (p *acpProtocol) applyEffort(ctx context.Context, effort string) (string, error) {
 	p.mu.Lock()
 	sessionID := p.sessionID
 	opt := configOption(p.configOptions, "thought_level")
 	p.mu.Unlock()
 	if opt == nil {
-		return nil
+		return "", nil
 	}
 	value := pickEffortValue(*opt, effort)
 	if value == "" {
-		return nil
+		return "", nil
 	}
 	raw, err := p.client.Call(ctx, "session/set_config_option", map[string]any{
 		"sessionId": sessionID, "configId": opt.ID, "value": value,
 	}, modelReplyWait)
 	if err != nil {
-		return fmt.Errorf("%s session/set_config_option: %w", p.kind, err)
+		return "", fmt.Errorf("%s session/set_config_option: %w", p.kind, err)
 	}
 	p.noteModels(raw)
-	return nil
+	return value, nil
 }
 
 // effortOrder ranks the thought levels a vendor offers.

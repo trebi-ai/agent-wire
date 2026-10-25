@@ -404,7 +404,7 @@ var authProbes = map[Harness]authProbe{
 		parse: func(out string, err error) (AuthState, string, bool) {
 			low := strings.ToLower(out)
 			switch {
-			case strings.Contains(low, "not authenticated"):
+			case strings.Contains(low, "not authenticated"), strings.Contains(low, "not logged in"):
 				return AuthMissing, "", true
 			case strings.Contains(low, "logged in"):
 				return AuthOK, "", true

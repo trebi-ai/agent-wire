@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.7.1] - 2026-10-25
+
+### Fixed
+
+- ACP: the pane session flags that the driver removes keep the next flag when `--resume` or `-r` has no value. Before, `--resume --model x` lost `--model`.
+- ACP: the effort status names the level that the driver sent. When the session does not offer the level, the status says "not offered" instead of a false "effort <level>".
+- grok: the login probe also reads "not logged in" as a missing login.
+
+### Tests
+
+- The recorded omp and grok fixtures all replay: grok cancel, resume, load, skill and model change (with the plain string value and the `error.data` reason), and omp handshake, load and steering.
+
 ## [v0.7.0] - 2026-10-24
 
 ### Added

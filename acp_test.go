@@ -739,16 +739,23 @@ func acpTestResultOf(t *testing.T, frames []map[string]any, id string) map[strin
 }
 
 // acpTestStartReplay opens a session whose handshake answers come from a
-// recorded fixture and returns the remaining frames to push.
-func acpTestStartReplay(t *testing.T, kind acpKind, req StartRequest, name string) (*coaTestPeer, *acpSession, *coaTestEvents, func()) {
+// recorded fixture and returns a func that pushes the other frames. A method in
+// refuse gets an error, so the driver takes its fallback. The recorded turn
+// result takes the id of the live prompt.
+func acpTestStartReplay(t *testing.T, kind acpKind, req StartRequest, name string, refuse ...string) (*coaTestPeer, *acpSession, *coaTestEvents, func()) {
 	t.Helper()
 	frames := acpTestFixtureLines(t, name)
+	prompts := make(chan any, 4)
 	handler := func(p *coaTestPeer, f coaTestFrame) {
-		switch f.method() {
-		case "initialize":
+		switch {
+		case slices.Contains(refuse, f.method()):
+			p.replyErr(f.m["id"], -32601, "refused by the test")
+		case f.method() == "initialize":
 			p.reply(f.m["id"], acpTestResultOf(t, frames, "1"))
-		case "session/new", "session/resume", "session/load":
+		case f.method() == "session/new" || f.method() == "session/resume" || f.method() == "session/load":
 			p.reply(f.m["id"], acpTestResultOf(t, frames, "2"))
+		case f.method() == "session/prompt":
+			prompts <- f.m["id"]
 		default:
 			coaTestACPAgent(p, f)
 		}
@@ -758,11 +765,45 @@ func acpTestStartReplay(t *testing.T, kind acpKind, req StartRequest, name strin
 	events := coaTestWatch(t, s.Events())
 	events.next(EventInit)
 	replay := func() {
-		for _, f := range frames[2:] {
+		var promptID any
+		select {
+		case promptID = <-prompts:
+		case <-time.After(200 * time.Millisecond):
+		}
+		for _, f := range frames {
+			if id, _ := f["id"].(json.Number); id.String() == "1" || id.String() == "2" {
+				continue
+			}
+			if res, ok := f["result"].(map[string]any); ok && res["stopReason"] != nil && promptID != nil {
+				f["id"] = promptID
+			}
 			peer.push(f)
 		}
 	}
 	return peer, s, events, replay
+}
+
+// acpTestTurn collects the assistant text and the tool events up to the turn
+// result.
+func acpTestTurn(t *testing.T, events *coaTestEvents) (string, []ToolEvent, Event) {
+	t.Helper()
+	var text strings.Builder
+	var tools []ToolEvent
+	for {
+		ev := events.nextWhere(func(ev Event) bool {
+			return ev.Type == EventAssistant || ev.Type == EventTool || ev.Type == EventResult || ev.Type == EventError
+		})
+		switch ev.Type {
+		case EventAssistant:
+			text.WriteString(ev.Text)
+		case EventTool:
+			if ev.Tool != nil {
+				tools = append(tools, *ev.Tool)
+			}
+		default:
+			return text.String(), tools, ev
+		}
+	}
 }
 
 // TestOMPSession replays a recorded omp turn: init, assistant text, tool call,
@@ -1085,6 +1126,7 @@ func TestGrokAuthProbe(t *testing.T) {
 	}{
 		{"You are not authenticated.\n\nAvailable models:", AuthMissing},
 		{"You are logged in with grok.com.\n\nAvailable models:", AuthOK},
+		{"You are not logged in.", AuthMissing},
 		{"something else", AuthUnknown},
 	}
 	for _, tc := range cases {
@@ -1098,8 +1140,8 @@ func TestGrokAuthProbe(t *testing.T) {
 // TestACPSessionArgsDropsPaneFlags proves the pane session flags do not reach
 // the ACP subcommand. The wire owns the session id.
 func TestACPSessionArgsDropsPaneFlags(t *testing.T) {
-	got := stripACPSessionArgs([]string{"--session-id", "u", "-s", "v", "--resume=w", "--continue", "-c", "-m", "x"})
-	want := []string{"-m", "x"}
+	got := stripACPSessionArgs([]string{"--session-id", "u", "-s", "v", "--resume=w", "--continue", "-c", "-m", "x", "--resume", "--model", "y", "-r"})
+	want := []string{"-m", "x", "--model", "y"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("stripACPSessionArgs = %v, want %v", got, want)
 	}
@@ -1127,5 +1169,204 @@ func TestACPStartIgnoresPaneSessionID(t *testing.T) {
 	}
 	if s.ID() != "ses_new" {
 		t.Fatalf("session id = %q, want ses_new", s.ID())
+	}
+}
+
+// TestOMPHandshake replays the recorded handshake: the model list comes from
+// the config options, and a failed MCP server stays assistant text.
+func TestOMPHandshake(t *testing.T) {
+	_, s, events, replay := acpTestStartReplay(t, acpOMP, StartRequest{}, "omp/handshake.ndjson")
+	if models := s.Models(); len(models) == 0 {
+		t.Fatal("handshake offers no models")
+	}
+	replay()
+	ev := events.next(EventAssistant)
+	if !strings.Contains(ev.Text, "failed to connect") {
+		t.Fatalf("MCP warning text: %q", ev.Text)
+	}
+}
+
+// TestOMPLoad replays a resume that falls back to session/load.
+func TestOMPLoad(t *testing.T) {
+	peer, s, events, replay := acpTestStartReplay(t, acpOMP, StartRequest{SessionID: "ses_omp_15"}, "omp/load.ndjson", "session/resume")
+	peer.waitMethod("session/load")
+	if err := s.Prompt(context.Background(), Prompt{Text: "recall"}); err != nil {
+		t.Fatal(err)
+	}
+	replay()
+	text, _, res := acpTestTurn(t, events)
+	if res.Type != EventResult || res.Result.Subtype != "success" || !strings.Contains(text, "PELICAN-77") {
+		t.Fatalf("load turn: %q %+v", text, res)
+	}
+}
+
+// TestOMPSteer replays the recorded steering frames. The first steer gets the
+// promptRequired refusal, the second joins the running turn.
+func TestOMPSteer(t *testing.T) {
+	frames := acpTestFixtureLines(t, "omp/steer.ndjson")
+	var turn []map[string]any
+	inTurn := false
+	for _, f := range frames {
+		id, _ := f["id"].(json.Number)
+		if id.String() == "5" {
+			inTurn = true
+			continue
+		}
+		if inTurn {
+			turn = append(turn, f)
+		}
+		if inTurn && id.String() == "4" {
+			break
+		}
+	}
+	prompts := make(chan any, 1)
+	steers := 0
+	handler := func(p *coaTestPeer, f coaTestFrame) {
+		switch f.method() {
+		case "initialize":
+			p.reply(f.m["id"], acpTestResultOf(t, frames, "1"))
+		case "session/new":
+			p.reply(f.m["id"], acpTestResultOf(t, frames, "2"))
+		case "session/prompt":
+			prompts <- f.m["id"]
+		case "_session/steering":
+			steers++
+			if steers == 1 {
+				p.reply(f.m["id"], acpTestResultOf(t, frames, "3"))
+				return
+			}
+			p.reply(f.m["id"], acpTestResultOf(t, frames, "5"))
+			promptID := <-prompts
+			for _, tf := range turn {
+				if id, _ := tf["id"].(json.Number); id.String() == "4" {
+					tf["id"] = promptID
+				}
+				p.push(tf)
+			}
+		}
+	}
+	_, ws, proto := coaTestStartACP(t, acpOMP, StartRequest{}, handler)
+	s := &acpSession{Session: ws, p: proto}
+	events := coaTestWatch(t, s.Events())
+	events.next(EventInit)
+	if err := s.Prompt(context.Background(), Prompt{Text: "run a slow shell command"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Steer(context.Background(), Prompt{Text: "early"}); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("refused steer: %v, want ErrUnsupported", err)
+	}
+	if err := s.Steer(context.Background(), Prompt{Text: "STEER-BANANA"}); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	text, tools, res := acpTestTurn(t, events)
+	if res.Type != EventResult || res.Result.Subtype != "success" || !strings.Contains(text, "STEER-BANANA") || len(tools) == 0 {
+		t.Fatalf("steered turn: %q tools=%d %+v", text, len(tools), res)
+	}
+}
+
+// TestGrokCancel replays the recorded cancel turn.
+func TestGrokCancel(t *testing.T) {
+	_, s, events, replay := acpTestStartReplay(t, acpGrok, StartRequest{}, "grok/cancel.ndjson")
+	if err := s.Prompt(context.Background(), Prompt{Text: "run"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Interrupt(context.Background())
+	replay()
+	res := events.next(EventResult)
+	if res.Result == nil || res.Result.Subtype != "cancelled" {
+		t.Fatalf("cancel result: %+v", res.Result)
+	}
+}
+
+// TestGrokResume replays the recorded session/resume and recall turn.
+func TestGrokResume(t *testing.T) {
+	peer, s, events, replay := acpTestStartReplay(t, acpGrok, StartRequest{SessionID: "ses_grok_17"}, "grok/resume.ndjson")
+	peer.waitMethod("session/resume")
+	if err := s.Prompt(context.Background(), Prompt{Text: "recall"}); err != nil {
+		t.Fatal(err)
+	}
+	replay()
+	text, _, res := acpTestTurn(t, events)
+	if res.Type != EventResult || res.Result.Subtype != "success" || !strings.Contains(text, "OWL-31") {
+		t.Fatalf("resume turn: %q %+v", text, res)
+	}
+}
+
+// TestGrokLoad replays a resume that falls back to session/load.
+func TestGrokLoad(t *testing.T) {
+	peer, s, events, replay := acpTestStartReplay(t, acpGrok, StartRequest{SessionID: "ses_grok_17"}, "grok/load.ndjson", "session/resume")
+	peer.waitMethod("session/load")
+	if err := s.Prompt(context.Background(), Prompt{Text: "recall"}); err != nil {
+		t.Fatal(err)
+	}
+	replay()
+	text, _, res := acpTestTurn(t, events)
+	if res.Type != EventResult || res.Result.Subtype != "success" || !strings.Contains(text, "OWL-31") {
+		t.Fatalf("load turn: %q %+v", text, res)
+	}
+}
+
+// TestGrokSkill replays the recorded turn that reads an injected skill.
+func TestGrokSkill(t *testing.T) {
+	_, s, events, replay := acpTestStartReplay(t, acpGrok, StartRequest{}, "grok/skill.ndjson")
+	if err := s.Prompt(context.Background(), Prompt{Text: "use the skill"}); err != nil {
+		t.Fatal(err)
+	}
+	replay()
+	text, tools, res := acpTestTurn(t, events)
+	if res.Type != EventResult || res.Result.Subtype != "success" || !strings.Contains(text, "SKILL-LIME") || len(tools) == 0 {
+		t.Fatalf("skill turn: %q tools=%d %+v", text, len(tools), res)
+	}
+}
+
+// TestGrokSetModel answers session/set_config_option with the recorded grok
+// replies. The value must be a plain string, and a bad id keeps the vendor
+// reason from error.data in the error text.
+func TestGrokSetModel(t *testing.T) {
+	frames := acpTestFixtureLines(t, "grok/set_model.ndjson")
+	var unknown map[string]any
+	for _, f := range frames {
+		if id, _ := f["id"].(json.Number); id.String() == "6" {
+			unknown = f
+		}
+	}
+	handler := func(p *coaTestPeer, f coaTestFrame) {
+		switch f.method() {
+		case "initialize":
+			p.reply(f.m["id"], acpTestResultOf(t, frames, "1"))
+		case "session/new":
+			p.reply(f.m["id"], acpTestResultOf(t, frames, "2"))
+		case "session/set_config_option":
+			params, _ := f.m["params"].(map[string]any)
+			value, isString := params["value"].(string)
+			if !isString || params["configId"] != "model" {
+				p.push(map[string]any{"jsonrpc": "2.0", "id": f.m["id"], "error": map[string]any{"code": -32602, "message": "Invalid params"}})
+				return
+			}
+			if value != "grok-4.6" {
+				p.push(map[string]any{"jsonrpc": "2.0", "id": f.m["id"], "error": unknown["error"]})
+				return
+			}
+			p.reply(f.m["id"], acpTestResultOf(t, frames, "3"))
+		}
+	}
+	_, ws, proto := coaTestStartACP(t, acpGrok, StartRequest{}, handler)
+	s := &acpSession{Session: ws, p: proto}
+	coaTestWatch(t, s.Events()).next(EventInit)
+	if err := s.SetModel(context.Background(), "grok-4.6"); err != nil {
+		t.Fatalf("set model: %v", err)
+	}
+	var current string
+	for _, m := range s.Models() {
+		if m.Default {
+			current = m.ID
+		}
+	}
+	if current != "grok-4.6" {
+		t.Fatalf("current model = %q, want grok-4.6", current)
+	}
+	err := s.SetModel(context.Background(), "grok-nope")
+	if err == nil || !strings.Contains(err.Error(), "unknown model id") {
+		t.Fatalf("bad model error: %v", err)
 	}
 }
