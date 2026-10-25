@@ -279,11 +279,18 @@ func (c *Client) Notify(method string, params any) error {
 // matches the response in its own Handle loop.
 func (c *Client) Request(method string, params any) (ID, error) {
 	id := c.NextID()
+	return id, c.RequestWithID(id, method, params)
+}
+
+// RequestWithID sends a request with an id that the caller allocated. A
+// caller that must record the id before the reply can arrive uses NextID and
+// this method.
+func (c *Client) RequestWithID(id ID, method string, params any) error {
 	frame := map[string]any{"jsonrpc": Version, "id": id, "method": method}
 	if params != nil {
 		frame["params"] = params
 	}
-	return id, c.send(frame)
+	return c.send(frame)
 }
 
 // Call sends a request and waits for its response. The waiter is always

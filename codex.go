@@ -349,15 +349,19 @@ func (p *codexProtocol) Handshake(ctx context.Context, _ *wire.Writer) ([]Event,
 	return nil, nil
 }
 
-// requestLimits sends account/rateLimits/read once. Parse maps the reply.
+// requestLimits sends account/rateLimits/read once. Parse maps the reply. The
+// pending id is recorded before the frame leaves, or a fast reply would look
+// like an unmatched response.
 func (p *codexProtocol) requestLimits() {
-	id, err := p.client.Request("account/rateLimits/read", map[string]any{"excludeResetCreditDetails": true})
-	if err != nil {
-		return
-	}
+	id := p.client.NextID()
 	p.mu.Lock()
 	p.limitsReq = id.String()
 	p.mu.Unlock()
+	if err := p.client.RequestWithID(id, "account/rateLimits/read", map[string]any{"excludeResetCreditDetails": true}); err != nil {
+		p.mu.Lock()
+		p.limitsReq = ""
+		p.mu.Unlock()
+	}
 }
 
 // limitsReply reports whether msg answers the limits request, and maps it.
