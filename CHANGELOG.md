@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- ACP: a fresh `Start` ignores `StartRequest.SessionID` and opens `session/new`. Only Cursor uses a client-chosen id. Before, a session id minted for the pane made grok send `session/resume` before any session existed.
 - Version parsing accepts a name prefix (`omp/18.12.6`, `grok 1.0.70 (…)`, `codex-cli 0.155.1`), so the version floors work for every vendor line.
 - JSON-RPC errors append the reason in `error.data`, including a string and the `message`, `details`, `detail` and `reason` fields, so `ClassifyFor` sees the vendor text.
 - ACP: a failed session open keeps the login classification (`not_logged_in`) instead of a generic protocol failure. grok never runs `authenticate` from the library, because that method can start a browser or device login.
