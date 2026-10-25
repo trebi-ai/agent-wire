@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.7.2] - 2026-10-25
+
+### Added
+
+- `ModelArgs(h, model, effort)` returns the CLI flags that set the model and the reasoning effort of a harness, for a consumer that starts the interactive CLI in a terminal. The launch builder uses the same table.
+- Cursor: `ModelArgs` gives `--model`.
+
+### Fixed
+
+- Codex: the effort `max` becomes `model_reasoning_effort=xhigh`, the highest level of Codex. Before, Codex got the level `max`, which it does not know.
+
 ## [v0.7.1] - 2026-10-25
 
 ### Fixed

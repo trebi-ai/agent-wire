@@ -511,3 +511,30 @@ func TestGrokHome(t *testing.T) {
 		t.Fatalf("config.toml = %q", b)
 	}
 }
+
+func TestModelArgs(t *testing.T) {
+	cases := []struct {
+		h             Harness
+		model, effort string
+		want          []string
+	}{
+		{Claude, "claude-opus-5-5", "max", []string{"--model", "claude-opus-5-5", "--effort", "max"}},
+		{Pi, "m", "low", []string{"--model", "m", "--effort", "low"}},
+		{Copilot, "", "high", []string{"--effort", "high"}},
+		{Codex, "gpt-5.5", "medium", []string{"-m", "gpt-5.5", "-c", "model_reasoning_effort=medium"}},
+		{Codex, "", "max", []string{"-c", "model_reasoning_effort=xhigh"}},
+		{Gemini, "gemini-2.5-pro", "high", []string{"--model", "gemini-2.5-pro"}},
+		{Cursor, "gpt-5", "high", []string{"--model", "gpt-5"}},
+		{OMP, "m", "xhigh", []string{"--model", "m", "--thinking", "xhigh"}},
+		{Grok, "grok-4", "max", []string{"-m", "grok-4", "--reasoning-effort", "xhigh"}},
+		{OpenCode, "anthropic/claude", "high", nil},
+		{OpenCode2, "anthropic/claude", "high", nil},
+		{Claude, "", "", nil},
+		{Harness("unknown"), "m", "high", nil},
+	}
+	for _, tc := range cases {
+		if got := ModelArgs(tc.h, tc.model, tc.effort); !slices.Equal(got, tc.want) {
+			t.Errorf("ModelArgs(%s, %q, %q) = %q, want %q", tc.h, tc.model, tc.effort, got, tc.want)
+		}
+	}
+}

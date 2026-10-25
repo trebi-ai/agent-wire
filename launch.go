@@ -226,36 +226,52 @@ func applySessionArgs(req *StartRequest, l *launch) {
 }
 
 // applyModelEffort adds the model and reasoning-effort flags. A harness that
-// takes them on the wire (Codex model, OpenCode and OpenCode2 model and
-// variant, ACP set_model) gets them from the driver instead.
+// takes the model on the wire (Codex, OpenCode and OpenCode2 model and
+// variant, Cursor set_model) gets it from the driver instead.
 func applyModelEffort(req *StartRequest, l *launch) {
-	if req.Model != "" {
-		switch req.Harness {
-		case Claude, Pi, Copilot, Gemini, OMP:
-			l.args = append(l.args, "--model", req.Model)
-		case Grok:
-			l.args = append(l.args, "-m", req.Model)
+	model := req.Model
+	switch req.Harness {
+	case Codex, OpenCode, OpenCode2, Cursor:
+		model = ""
+	}
+	l.args = append(l.args, ModelArgs(req.Harness, model, req.Effort)...)
+}
+
+// ModelArgs returns the flags that set the model and the reasoning effort on
+// the interactive CLI of a harness, for example to start it in a terminal. An
+// empty model or effort adds no flag. A harness without the flag gets none:
+// OpenCode 2 has no model flag, and only some CLIs take an effort.
+func ModelArgs(h Harness, model, effort string) []string {
+	var args []string
+	if model != "" {
+		switch h {
+		case Claude, Pi, Copilot, Gemini, OMP, Cursor:
+			args = append(args, "--model", model)
+		case Codex, Grok:
+			args = append(args, "-m", model)
 		}
 	}
-	if req.Effort == "" {
-		return
+	if effort == "" {
+		return args
 	}
-	switch req.Harness {
+	switch h {
 	case Claude, Pi, Copilot:
-		l.args = append(l.args, "--effort", req.Effort)
+		args = append(args, "--effort", effort)
 	case Codex:
-		l.args = append(l.args, "-c", "model_reasoning_effort="+req.Effort)
+		args = append(args, "-c", "model_reasoning_effort="+xhighEffort(effort))
 	case OMP:
 		// omp passes every level through unchanged, including off, minimal,
 		// xhigh and auto.
-		l.args = append(l.args, "--thinking", req.Effort)
+		args = append(args, "--thinking", effort)
 	case Grok:
-		l.args = append(l.args, "--reasoning-effort", grokEffort(req.Effort))
+		args = append(args, "--reasoning-effort", xhighEffort(effort))
 	}
+	return args
 }
 
-// grokEffort maps the shared max level onto the highest grok offers.
-func grokEffort(effort string) string {
+// xhighEffort maps the shared max level onto xhigh, the highest level of
+// Codex and grok.
+func xhighEffort(effort string) string {
 	if effort == "max" {
 		return "xhigh"
 	}

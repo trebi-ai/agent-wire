@@ -122,6 +122,8 @@ A session emits `EventLimits` when the harness reports the plan limits of the ac
 
 The runtime caches each list by harness, binary, version and home. `Options.ModelCacheTTL` sets the lifetime: zero means 10 minutes, and a negative value turns the cache off. A failed probe stays in the cache for 30 seconds only. Call `Runtime.InvalidateModels(harness)` after a login or a config change. A harness without a lister returns `ErrUnsupported`. A driver from `Runtime.SetDriver` that implements `ModelLister` is used the same way.
 
+`ModelArgs(harness, model, effort)` returns the CLI flags that set the model and the effort, for a consumer that starts the interactive CLI itself (for example in a terminal). An empty value adds no flag. `max` becomes `xhigh` for Codex and grok. OpenCode has no flag.
+
 A live session can do more through two optional interfaces. Use a type assertion to find them:
 
 ```go
