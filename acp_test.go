@@ -1044,15 +1044,12 @@ func TestGrokPermission(t *testing.T) {
 		t.Fatal(err)
 	}
 	replay()
-	for {
-		ev := events.nextWhere(func(ev Event) bool { return ev.Type == EventPermission || ev.Type == EventResult })
-		if ev.Type == EventPermission {
-			t.Fatalf("grok sent a permission request: %+v", ev.Permission)
-		}
-		if ev.Result == nil || ev.Result.Subtype != "success" {
-			t.Fatalf("result: %+v", ev.Result)
-		}
-		return
+	ev := events.nextWhere(func(ev Event) bool { return ev.Type == EventPermission || ev.Type == EventResult })
+	if ev.Type == EventPermission {
+		t.Fatalf("grok sent a permission request: %+v", ev.Permission)
+	}
+	if ev.Result == nil || ev.Result.Subtype != "success" {
+		t.Fatalf("result: %+v", ev.Result)
 	}
 }
 

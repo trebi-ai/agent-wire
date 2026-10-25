@@ -705,15 +705,6 @@ func (o acpConfigOption) current() string {
 	return ""
 }
 
-// values lists the offered values.
-func (o acpConfigOption) values() []string {
-	out := make([]string, 0, len(o.Options))
-	for _, choice := range o.Options {
-		out = append(out, choice.Value)
-	}
-	return out
-}
-
 // acpConfigOptions reads an option list, wrapped in {"configOptions": …} or
 // bare. It returns nil when the reply carries none.
 func acpConfigOptions(raw json.RawMessage) []acpConfigOption {
