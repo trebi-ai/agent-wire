@@ -1093,3 +1093,13 @@ func TestGrokAuthProbe(t *testing.T) {
 		}
 	}
 }
+
+// TestACPSessionArgsDropsPaneFlags proves the pane session flags do not reach
+// the ACP subcommand. The wire owns the session id.
+func TestACPSessionArgsDropsPaneFlags(t *testing.T) {
+	got := stripACPSessionArgs([]string{"--session-id", "u", "-s", "v", "--resume=w", "--continue", "-c", "-m", "x"})
+	want := []string{"-m", "x"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("stripACPSessionArgs = %v, want %v", got, want)
+	}
+}

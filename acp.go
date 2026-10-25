@@ -239,9 +239,10 @@ func (d acpDriver) acpArgs(ctx context.Context, l *launch, req StartRequest, res
 	case acpOMP:
 		// omp acp parses every root flag after the subcommand. Without
 		// --allow-home, omp moves a session started in the user's home to a
-		// temp dir.
+		// temp dir. The session id travels on the wire, so the pane flags do
+		// not go to the ACP child.
 		args := []string{"acp"}
-		args = append(args, l.args...)
+		args = append(args, stripACPSessionArgs(l.args)...)
 		if isUserHome(req.WorkingDir) && !hasFlag(args, "--allow-home") {
 			args = append(args, "--allow-home")
 		}
@@ -251,7 +252,7 @@ func (d acpDriver) acpArgs(ctx context.Context, l *launch, req StartRequest, res
 		// leader process outlives the session, so --no-leader is the default;
 		// Raw["grok_leader"] keeps it for an expert caller.
 		args := []string{"agent"}
-		args = append(args, l.args...)
+		args = append(args, stripACPSessionArgs(l.args)...)
 		if keepLeader, _ := req.RawBool("grok_leader"); !keepLeader && !hasFlag(args, "--no-leader") {
 			args = append(args, "--no-leader")
 		}
@@ -332,6 +333,27 @@ func looksLikeUUID(s string) bool {
 		}
 	}
 	return true
+}
+
+// stripACPSessionArgs removes the pane session flags. The ACP wire opens or
+// resumes the session with session/new, session/resume or session/load, and
+// the agent subcommand does not accept the pane form.
+func stripACPSessionArgs(args []string) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		name, _, hasValue := strings.Cut(a, "=")
+		switch {
+		case name == "--session-id" || name == "-s" || name == "--resume" || name == "-r" || name == "--restore" || name == "--continue" || name == "-c":
+			if !hasValue && name != "--continue" && name != "-c" {
+				i++
+			}
+		case strings.HasPrefix(a, "--session-id=") || strings.HasPrefix(a, "--resume=") || strings.HasPrefix(a, "--restore="):
+		default:
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // stripCursorArgs removes run-mode flags that conflict with the acp
