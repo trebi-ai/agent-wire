@@ -4,6 +4,24 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.8.0] - Unreleased
+
+### Added
+
+- Package `tui` reads the screen of a vendor TUI that runs in a terminal. `Classify(h, screen)` gives the state (working, idle, dialog, waiting), the keys that answer a known startup dialog, a login or limit blocker, and the open question with its choices. `ParseForm` and `ParsePrompt` read the Claude question forms and permission prompts. `NewStarter` steps through the startup dialogs. `ParseLogin` reads the login URL, the device code, and a pasted token from a login screen. `TurnQuestion` finds a question at the end of an agent message. Recorded frames in `tui/testdata` cover every rule.
+- `StaticModels(h)`, `Efforts(h, model)`, and `DefaultEffort(h)` give the static model list and the effort levels of each harness. The effort levels agree with `ModelArgs`.
+- `Recipe(h)` gives the install facts of each harness: the method (npm, brew, script, binary), the package, the binary, the self-update command, and the env or args that stop the vendor auto-update. `InstallRecipe.Command` and `InstallRecipe.UpdateCommand` give the command lines. The library runs none of them.
+- `Runtime.LatestVersion(ctx, h)` reads the newest release of a harness from the npm registry. `Options.HTTPClient` sets the HTTP client.
+- `LoginCommand(h)`, `LogoutCommand(h)`, and `LoginEnv(h, home)` give the vendor login and logout command lines and their env for a login home.
+- `CredentialFiles(h)`, `DefaultHome(h)`, and `TokenEnvKeys(h)` give the credential files, the default login home, and the token env keys of each harness.
+- `AuthStatus(ctx, h, home)` tells the login state of a harness in a login home. It asks the vendor first and then reads the credential files. `AuthExpired` marks a login on file that the vendor rejects.
+
+### Changed
+
+- `Detect`: the cursor login probe reads `cursor-agent status`.
+- `Detect`: the OpenCode login probe counts the credentials of `auth list`. Before, any output was a login, also "0 credentials".
+- `Detect`: Copilot also reads `COPILOT_GITHUB_TOKEN`, cursor reads `CURSOR_API_KEY`, and pi reads the API keys of its providers.
+
 ## [v0.7.2] - 2026-10-25
 
 ### Added
