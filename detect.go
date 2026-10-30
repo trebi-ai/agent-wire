@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +20,8 @@ const (
 	AuthUnknown AuthState = "unknown"
 	AuthOK      AuthState = "ok"
 	AuthMissing AuthState = "missing"
+	// AuthExpired means that a login is on file, but the vendor rejects it.
+	AuthExpired AuthState = "expired"
 )
 
 // Features reports what a harness can take per session. It is static per
@@ -306,8 +310,10 @@ var authEnvKeys = map[Harness][]string{
 	Claude:  {"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"},
 	Codex:   {"OPENAI_API_KEY"},
 	Gemini:  {"GEMINI_API_KEY", "GOOGLE_API_KEY"},
-	Copilot: {"GITHUB_TOKEN", "GH_TOKEN"},
+	Copilot: {"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"},
 	Grok:    {"XAI_API_KEY"},
+	Cursor:  {"CURSOR_API_KEY"},
+	Pi:      {"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"},
 }
 
 // authProbe is one vendor login-status command.
@@ -357,30 +363,8 @@ var authProbes = map[Harness]authProbe{
 			return AuthUnknown, "", false
 		},
 	},
-	OpenCode: {
-		args: []string{"auth", "list"},
-		parse: func(out string, err error) (AuthState, string, bool) {
-			if err != nil {
-				return AuthUnknown, "", false
-			}
-			if strings.TrimSpace(out) == "" {
-				return AuthMissing, "", true
-			}
-			return AuthOK, "", true
-		},
-	},
-	OpenCode2: {
-		args: []string{"auth", "list"},
-		parse: func(out string, err error) (AuthState, string, bool) {
-			if err != nil {
-				return AuthUnknown, "", false
-			}
-			if strings.TrimSpace(out) == "" {
-				return AuthMissing, "", true
-			}
-			return AuthOK, "", true
-		},
-	},
+	OpenCode:  {args: []string{"auth", "list"}, parse: parseOpenCodeAuthList},
+	OpenCode2: {args: []string{"auth", "list"}, parse: parseOpenCodeAuthList},
 	OMP: {
 		// The configured providers, never a credential. An empty list means
 		// no provider is logged in.
@@ -413,6 +397,49 @@ var authProbes = map[Harness]authProbe{
 			return AuthUnknown, "", false
 		},
 	},
+	Cursor: {
+		args: []string{"status"},
+		parse: func(out string, err error) (AuthState, string, bool) {
+			low := strings.ToLower(out)
+			if strings.Contains(low, "not logged") {
+				return AuthMissing, "", true
+			}
+			if err == nil && (strings.Contains(low, "logged in") || strings.Contains(out, "✓")) {
+				for _, line := range strings.Split(out, "\n") {
+					if line = strings.TrimSpace(line); strings.Contains(strings.ToLower(line), "logged in") {
+						return AuthOK, line, true
+					}
+				}
+				return AuthOK, "", true
+			}
+			return AuthUnknown, "", false
+		},
+	},
+}
+
+var (
+	ansiEscape    = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
+	credentialSum = regexp.MustCompile(`(\d+)\s+credentials?`)
+	storedRow     = regexp.MustCompile(`(?m)\S\s{2,}stored\s*$`)
+)
+
+// parseOpenCodeAuthList reads "N credentials" (1.x) or counts the "stored"
+// table rows (2.x) of `opencode auth list`.
+func parseOpenCodeAuthList(out string, err error) (AuthState, string, bool) {
+	if err != nil {
+		return AuthUnknown, "", false
+	}
+	out = ansiEscape.ReplaceAllString(out, "")
+	n := len(storedRow.FindAllString(out, -1))
+	if m := credentialSum.FindStringSubmatch(out); m != nil {
+		n, _ = strconv.Atoi(m[1])
+	} else if n == 0 && strings.TrimSpace(out) != "" {
+		return AuthUnknown, "", false
+	}
+	if n == 0 {
+		return AuthMissing, "", true
+	}
+	return AuthOK, fmt.Sprintf("%d credentials", n), true
 }
 
 // probeAuth reports the best-effort login state. It never returns an error:
@@ -450,7 +477,7 @@ func (rt *Runtime) probeAuth(ctx context.Context, h Harness, bin string) (AuthSt
 				return cached, nil
 			}
 		}
-		state, detail := runAuthProbe(ctx, h, bin)
+		state, detail := runAuthProbe(ctx, h, bin, nil)
 		e := authEntry{at: time.Now(), state: state, detail: detail}
 		if ttl > 0 {
 			rt.authMu.Lock()
@@ -494,12 +521,17 @@ type authEntry struct {
 // and every Detect call would otherwise spawn a process.
 const defaultAuthTTL = 5 * time.Minute
 
-// runAuthProbe runs the vendor login-status command for one harness.
-func runAuthProbe(ctx context.Context, h Harness, bin string) (AuthState, string) {
+// runAuthProbe runs the vendor login-status command for one harness. env is
+// added to the parent environment.
+func runAuthProbe(ctx context.Context, h Harness, bin string, env []string) (AuthState, string) {
 	probe := authProbes[h]
 	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(probeCtx, bin, probe.args...).CombinedOutput()
+	cmd := exec.CommandContext(probeCtx, bin, probe.args...)
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
+	out, err := cmd.CombinedOutput()
 	if state, detail, conclusive := probe.parse(string(out), err); conclusive {
 		return state, detail
 	}
