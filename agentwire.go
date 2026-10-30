@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -91,6 +92,9 @@ type Options struct {
 	// ModelCacheTTL is how long a model list answers from cache. Zero uses
 	// 10 min. A negative value disables the cache.
 	ModelCacheTTL time.Duration
+	// HTTPClient makes the release lookups of LatestVersion. Nil uses a
+	// client with a 10 s timeout.
+	HTTPClient *http.Client
 }
 
 // Session is one vendor conversation. The caller holds it for the life of the
