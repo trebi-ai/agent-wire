@@ -275,3 +275,83 @@ func (rt *Runtime) runProbe(ctx context.Context, h Harness, bin string, args []s
 	_ = s.KillTree()
 	return nil
 }
+
+// staticModels are the models of the harnesses whose CLI has no list
+// command. Aliases come first: they follow the newest vendor model. Checked
+// on 2026-10-01: Codex from its models cache (codex-cli 0.159.3), Copilot
+// from its --model choices (1.0.27).
+var staticModels = map[Harness][]ModelInfo{
+	Claude: {
+		{ID: "sonnet", Name: "Sonnet (latest)"},
+		{ID: "opus", Name: "Opus (latest)"},
+		{ID: "haiku", Name: "Haiku (latest)"},
+	},
+	Codex: {
+		{ID: "gpt-5.6-sol"},
+		{ID: "gpt-5.6-terra"},
+		{ID: "gpt-5.6-luna"},
+		{ID: "gpt-5.5"},
+		{ID: "gpt-5.4"},
+		{ID: "gpt-5.4-mini"},
+	},
+	Copilot: {
+		{ID: "claude-sonnet-4.6"},
+		{ID: "claude-sonnet-4.5"},
+		{ID: "claude-haiku-4.5"},
+		{ID: "claude-opus-4.6"},
+		{ID: "claude-opus-4.6-fast"},
+		{ID: "claude-opus-4.6-1m"},
+		{ID: "claude-opus-4.5"},
+		{ID: "claude-sonnet-4"},
+		{ID: "gpt-5.4"},
+		{ID: "gpt-5.4-mini"},
+		{ID: "gpt-5.3-codex"},
+		{ID: "gpt-5.2-codex"},
+		{ID: "gpt-5.2"},
+		{ID: "gpt-5.1"},
+		{ID: "gpt-5-mini"},
+		{ID: "gpt-4.1"},
+	},
+}
+
+// StaticModels returns a fixed model list for a harness whose CLI cannot
+// list models without a session, or nil. It needs no install and no login.
+// Runtime.Models gives the live list.
+func StaticModels(h Harness) []ModelInfo {
+	return cloneModels(staticModels[h])
+}
+
+// effortLevels are the effort values that the vendor CLI takes, from low
+// to high. ModelArgs passes them through; it also maps "max" to "xhigh" for
+// Codex and Grok.
+var effortLevels = map[Harness][]string{
+	Claude:  {"low", "medium", "high", "xhigh", "max"},
+	Codex:   {"none", "minimal", "low", "medium", "high", "xhigh"},
+	Copilot: {"low", "medium", "high", "xhigh", "max"},
+	Grok:    {"low", "medium", "high", "xhigh"},
+	Pi:      {"off", "minimal", "low", "medium", "high", "xhigh", "max"},
+	OMP:     {"off", "minimal", "low", "medium", "high", "xhigh", "max"},
+}
+
+// Efforts returns the effort levels of model on harness h, from low to
+// high. The levels are the same for each model of a harness, except
+// OpenCode: there the levels are the variants of each model, and Efforts
+// returns nil (use the live model list). An empty, non-nil result means
+// that the harness has no effort setting.
+func Efforts(h Harness, model string) []string {
+	switch h {
+	case OpenCode, OpenCode2:
+		return nil
+	}
+	return append([]string{}, effortLevels[h]...)
+}
+
+// DefaultEffort returns the effort that harness h uses when no effort is
+// set, or "" when the vendor does not document one. A user config can
+// change it.
+func DefaultEffort(h Harness) string {
+	if h == Codex {
+		return "medium"
+	}
+	return ""
+}
