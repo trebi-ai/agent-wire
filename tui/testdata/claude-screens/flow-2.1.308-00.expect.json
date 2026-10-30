@@ -1,0 +1,29 @@
+{
+  "form" : {
+    "cursor" : "1. SQLite",
+    "headers" : [
+      "Store",
+      "Tests"
+    ],
+    "items" : [
+      {
+        "allowsOther" : true,
+        "id" : "q1",
+        "kind" : "single",
+        "options" : [
+          {
+            "detail" : "Store data in a SQLite database file.",
+            "label" : "SQLite"
+          },
+          {
+            "detail" : "Store data in plain JSON files.",
+            "label" : "JSON"
+          }
+        ],
+        "text" : "Which store?"
+      }
+    ],
+    "review" : false
+  },
+  "prompt" : null
+}

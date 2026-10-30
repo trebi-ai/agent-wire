@@ -1,0 +1,15 @@
+cursor-agent --trust --force
+
+
+  Cursor Agent
+  v2026.07.23-e383d2b
+  Tip: Use /plan to plan execution and reach the right outcome faster.
+
+
+
+
+  → Plan, search, build anything
+
+
+  Auto                                                                                                  Run Everything
+  /tmp/fixture-workspace

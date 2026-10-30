@@ -1,0 +1,33 @@
+{
+  "form" : null,
+  "prompt" : {
+    "amending" : false,
+    "body" : [
+      "Write short git status to status.txt",
+      "git -C . status --short > status.txt"
+    ],
+    "cursor" : "1. Yes",
+    "kind" : "permission",
+    "options" : [
+      {
+        "label" : "Yes",
+        "n" : 1
+      },
+      {
+        "label" : "Yes, and always allow access to /private/tmp/claude-501/-Users-alice-Projects-workshop-workspace/d5fcef0c-7455-4f95-b07e-34552b4e76b4/scratchpad/formlab from this project",
+        "n" : 2
+      },
+      {
+        "label" : "Yes, and switch to auto mode · auto mode handles these prompts for you",
+        "n" : 3
+      },
+      {
+        "label" : "No",
+        "n" : 4
+      }
+    ],
+    "question" : "Do you want to proceed?",
+    "title" : "Bash command",
+    "typed" : 4
+  }
+}

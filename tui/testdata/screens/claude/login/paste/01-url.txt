@@ -1,0 +1,5 @@
+Please visit the following URL to authenticate:
+
+https://claude.ai/oauth/authorize?code=true&client_id=example
+
+Then paste the authorization code here:

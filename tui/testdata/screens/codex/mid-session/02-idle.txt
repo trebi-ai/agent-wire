@@ -1,0 +1,40 @@
+  Tip: Our most capable model yet. GPT-5.6 Sol can tackle complex code changes, dig into research, produce polished
+  documents, and take on your most ambitious work. Sol is highly capable at lower reasoning efforts—try starting lower,
+  then turn it up for harder jobs.
+
+
+› Write a 300 word story about a lighthouse keeper. Do not use tools.
+
+
+• Every evening, Mara climbed the iron stairs of Halewick Light with a kettle in one hand and a brass key in the other.
+  The sea below worried the rocks like an old dog with a bone. She trimmed the wick, polished the lens, and waited for
+  the first star to appear in the western pane.
+
+  For thirty years she had kept ships from the shoals, though few captains knew her name. They knew only the white
+  flash, three beats apart, promising harbor. Mara liked it that way. A keeper was not meant to be seen; she was meant
+  to be believed.
+
+  One November night, fog swallowed the island before supper. The bell buoy clanged somewhere blind and far. Then,
+  beneath the wind, Mara heard a whistle: one long cry, then two short. Distress.
+
+  The lamp sputtered. A crack in the oil pipe had opened, dripping fuel onto stone. Mara knelt, wrapped the pipe with
+  her wool scarf, and burned her fingers tightening the clamp. The flame rose again, but the fog threw its light back at
+  her.
+
+  So she took the emergency lantern and went outside. Step by step, she carried the small red glow down the cliff path,
+  past turf slick with spray. At the lower ledge she swung it over the abyss in the pattern sailors knew.
+
+  An hour later, the trawler Mercy limped into the cove, hull scraped but whole. At dawn, its captain brought Mara a
+  crate of oranges and stared at her bandaged hands.
+
+  “You saved us,” he said.
+
+  Mara looked up at the tower, where the great lens still turned, patient as the moon. “No,” she said, smiling. “I only
+  kept the promise.”
+
+  That night, when the beam swept over black water, Mara felt, for once, that the unseen could also be known and loved.
+
+
+› Explain this codebase
+
+  gpt-5.5 medium · /private/var/folders/49/1zc24t595j79t5mw7_t9gtxr0000gn/T/capture-tui.ZqS3ks

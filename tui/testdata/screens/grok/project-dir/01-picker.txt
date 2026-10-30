@@ -1,0 +1,40 @@
+
+  /private/tmp/claude-501/-Users-dev-Projects-myapp/d53c73a1-e3fe-4ad3-92f3-462f6d6a47b4/scratchpad/rec-grok-ws
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ┃
+  ┃  Run Grok Build in a project directory?
+  ┃
+  ┃  This gives Grok Build full context of your codebase for better results.
+  ┃
+  ┃  1 (○) rec-grok-ws (current)  /private/tmp/claude-501/-Users-dev-Projects-myapp/d53c73a1-e3fe-4ad3-92f3-        █
+  ┃                               462f6d6a47b4/scratchpad/rec-grok-ws                                                █
+  ┃  2 (○) myapp                   ~/Projects/myapp  (1m ago)                                                          █
+  ┃  3 (○) other-workspace        ~/Projects/other-workspace  (3h ago)                                               █
+  ┃  4 (○) _                      ~/_  (1d ago)                                                                      █
+  ┃  5 (○) Don't ask me again     Always start in the current directory (reset in config.toml)                       █
+  ┃  z (○) Type your answer here
+  ┃
+  ┃  ↑/↓ navigate · y copy                                                                            Enter:submit
+  ┃
+
+  Esc:unselect  │  Tab:scrollback  │  Shift+x:dismiss
+

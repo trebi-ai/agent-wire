@@ -1,0 +1,24 @@
+  Session   Issues   Pull requests   Gists
+
+  █ ▘▝ █  Check for mistakes.                                                  ┃
+   ▔▔▔▔                                                                        ┃
+                                                                               ┃
+ ● Tip: /app                                                                   ┃
+   └ Prefer a visual workspace? Try out the GitHub Copilot desktop app         ┃
+      https://github.com/features/ai/github-app                                ┃
+                                                                               ┃
+ ● Removed legacy terminal key bindings from VS Code.                          ┃
+                                                                               ┃
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Set up terminal for multi-line input support                                 │
+│ ──────────────────────────────────────────────────────────────────────────── │
+│ Detected terminal VS Code which supports multi-line input by setting up a    │
+│ key binding for shift+enter.                                                 │
+│                                                                              │
+│ Would you like to add this key binding to your terminal configuration?       │
+│                                                                              │
+│ ❯ 1. Yes                                                                     │
+│   2. No (Esc)                                                                │
+│                                                                              │
+│ ↑/↓ to navigate · enter to select · esc to cancel                            │
+╰──────────────────────────────────────────────────────────────────────────────╯

@@ -1,0 +1,6 @@
+tool: cursor
+version: 2026.07.23-e383d2b
+date: 2026-08-01
+geometry: 120x40
+command: cursor-agent --trust --force
+notes: CLI binary is cursor-agent; myapp tool name is cursor

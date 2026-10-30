@@ -1,0 +1,10 @@
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  ╭─╮╭─╮                                                                                          │
+│  ╰─╯╰─╯  GitHub Copilot v1.0.27                                                                  │
+│  █ ▘▝ █  Describe a task to get started.                                                         │
+│   ▔▔▔▔                                                                                           │
+│  Tip: /init Initialize Copilot instructions for this repository.                                 │
+│  Copilot uses AI. Check for mistakes.                                                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+● 💡 No copilot instructions found. Run /init to generate a copilot-instructions.md file for this project.

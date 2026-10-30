@@ -1,0 +1,33 @@
+{
+  "form" : {
+    "cursor" : "4. Type something.",
+    "headers" : [
+      "Name"
+    ],
+    "items" : [
+      {
+        "allowsOther" : true,
+        "header" : "Name",
+        "id" : "q1",
+        "kind" : "single",
+        "options" : [
+          {
+            "detail" : "Sync runs automatically in the background.",
+            "label" : "autoSync"
+          },
+          {
+            "detail" : "Sync runs once when the app starts.",
+            "label" : "syncOnStart"
+          },
+          {
+            "detail" : "Sync runs only when you start it.",
+            "label" : "manual"
+          }
+        ],
+        "text" : "Which name do you want for the new sync setting?"
+      }
+    ],
+    "review" : false
+  },
+  "prompt" : null
+}

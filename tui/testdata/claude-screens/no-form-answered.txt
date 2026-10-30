@@ -1,0 +1,21 @@
+ ▐▛███▛█   Claude Code v2.1.305
+▝▜██████▀  Haiku 5.5 · Claude Max
+ ▝▝   ▝▝   ~/Projects/workshop-workspace
+❯ Test of a UI. Do not read or change files. Call the AskUserQuestion tool once with two questions: 1) header
+  'Store', a long question of about 220 characters about which storage engine the sync service should use for the
+  event log when it runs on a small Mac with little disk, options SQLite, JSON files, Postgres; 2) header 'Tests',
+  multiSelect true, question 'Which tests do you want?', options Unit, Live, Snapshot. After the answer, reply with
+  one word: done.
+⏺ User answered Claude's questions:
+  ⎿  · Which storage engine should the sync service use for the event log when it runs on a small Mac with little
+     disk space? Each option has different disk use, write speed, and setup effort, so choose the one that best fits
+     a constrained machine. → SQLite
+     · Which tests do you want? → Unit, Live
+⏺ done
+✻ Sautéed for 5s · done 11:37 PM
+                                                                                                ◐ medium · /effort
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Haiku 5.5 | 1.0 min | 57K (6%) | ~/Projects/workshop-workspace
+  ⏵⏵ auto mode on (shift+tab to cycle)

@@ -1,0 +1,39 @@
+{
+  "form" : {
+    "boxes" : {
+      "1" : false,
+      "2" : false,
+      "3" : false,
+      "4" : false
+    },
+    "cursor" : "1. [ ] Unit",
+    "headers" : [
+      "Store",
+      "Tests"
+    ],
+    "items" : [
+      {
+        "allowsOther" : true,
+        "id" : "q1",
+        "kind" : "multi",
+        "options" : [
+          {
+            "detail" : "Fast tests for each target, run with swift test.",
+            "label" : "Unit"
+          },
+          {
+            "detail" : "Read-only calls to real services. Runs only with WORKSHOP_LIVE=1.",
+            "label" : "Live"
+          },
+          {
+            "detail" : "Fixed UI screenshots from the fakes, via --uishots.",
+            "label" : "Snapshot"
+          }
+        ],
+        "text" : "Which tests do you want?"
+      }
+    ],
+    "review" : false
+  },
+  "prompt" : null
+}

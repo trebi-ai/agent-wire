@@ -1,0 +1,10 @@
+tool: codex
+version: codex-cli 0.144.6
+date: 2026-07-18
+geometry: 120x40
+command: codex
+note: frames 02/03 of the raw capture (broken npm install stack trace) were
+  pruned. The composer "› " renders while "model: loading" — typing is
+  buffered, so the settled frame is the promoted ready golden. The trust
+  dialog and the splash both contain ">"/"›" glyphs: bare-">" readiness
+  would paste into them.

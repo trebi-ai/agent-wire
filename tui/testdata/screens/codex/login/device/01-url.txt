@@ -1,0 +1,5 @@
+To authenticate, visit:
+
+https://auth.openai.com/codex/device
+
+Enter code: ABCD-EFGH

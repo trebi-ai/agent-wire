@@ -1,0 +1,24 @@
+
+  The deeper lesson of terminal multiplexers is architectural. They demonstrate
+  the power of inserting a small, stable layer between two things that change at
+  different speeds: the ephemeral terminal in front of you and the long-lived
+  work you care about. That separation — presentation from process, viewer from
+  state — is the same principle behind detachable containers and remote
+  development servers. It is telling that a design from 1987 remains not just
+  relevant but newly useful in 2026. Fashions in developer tooling churn
+  constantly, but the problem of keeping work alive while windows come and go is
+  permanent, and the multiplexer's answer to it has aged remarkably well.
+
+  ---
+  That comes in at roughly 800 words. Would you like any revisions — for example
+  a different tone, more technical depth on tmux specifics, a shorter or longer
+  version, or a different structure? I'll wait for your reply.
+
+✻ Cooked for 36s
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  Fable 5 | 0.7 min | 37K (4%) | /private/tmp/claude-XXX/-Users-alice-Projects…
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+                                                                            /rc

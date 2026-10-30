@@ -1,0 +1,5 @@
+tool: opencode2
+version: 0.0.0-beta-19242
+date: 2026-09-22
+geometry: 120x40
+command: opencode2

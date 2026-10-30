@@ -1,0 +1,5 @@
+tool: grok
+version: grok 0.2.103 (89c3d36fb6f1) [stable]
+date: 2026-07-18
+geometry: 120x40
+command: grok

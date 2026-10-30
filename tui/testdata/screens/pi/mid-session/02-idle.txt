@@ -1,0 +1,40 @@
+fd not found. Offline mode enabled, skipping download.
+
+ Warning: tmux extended-keys is off. Modified Enter keys may not work. Add `set -g extended-keys on` to ~/.tmux.conf
+ and restart tmux.
+
+
+ Reply with only: ok
+
+
+ The user wants me to reply with only "ok".
+
+ ok
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+/private/var/folders/49/1zc24t595j79t5mw7_t9gtxr0000gn/T/tmp.8FcSBdMVzN
+↑6.5k ↓12 R512 CH7.3% $0.013 (sub) 1.4%/500k (auto)                                                    grok-4.5 • medium
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

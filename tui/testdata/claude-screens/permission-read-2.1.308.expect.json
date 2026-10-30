@@ -1,0 +1,29 @@
+{
+  "form" : null,
+  "prompt" : {
+    "amending" : false,
+    "body" : [
+      "Read(/private/tmp/claude-501/-Users-alice-Projects-workshop-workspace-d5fcef0c-7455-4f95-b07e-34552b4e76b4-scratchpad-",
+      "formlab/notes.md)"
+    ],
+    "cursor" : "1. Yes",
+    "kind" : "permission",
+    "options" : [
+      {
+        "label" : "Yes",
+        "n" : 1
+      },
+      {
+        "label" : "Yes, allow reading from /private/tmp/claude-501/-Users-alice-Projects-workshop-workspace-d5fcef0c-7455-4f95-b07e-34552b4e76b4-scratchpad-formlab during this session",
+        "n" : 2
+      },
+      {
+        "label" : "No",
+        "n" : 3
+      }
+    ],
+    "question" : "Do you want to proceed?",
+    "title" : "Read file",
+    "typed" : 3
+  }
+}

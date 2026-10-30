@@ -1,0 +1,4 @@
+tool: claude
+version: 2.1.x (Claude Code)
+date: 2026-09-15
+note: live pane had the cursor on "No, exit"; auto-answer must still pick 1.

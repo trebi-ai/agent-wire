@@ -1,0 +1,9 @@
+claude (Fable 5 CLI), 2026-07-18, 80x24 tmux, captured during the Phase 5
+degradation drill (shim off PATH).
+01-busy: active turn — "✽ Composing… (9s · thinking with xhigh effort)".
+This CLI version dropped the "(esc to interrupt)" hint; the active line is
+"<spinner> <Verb>… (Ns · …)" and the finished line is past-tense with no
+parens ("✻ Cooked for 36s"), so "… (" distinguishes busy. Older versions
+keep "esc to interrupt" — the classifier matches either.
+02-idle: finished turn ("✻ Cooked for 36s") + live input box and status bar.
+Redacted: alice → dev, claude-501 → claude-XXX.

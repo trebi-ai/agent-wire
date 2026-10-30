@@ -1,0 +1,34 @@
+{
+  "form" : null,
+  "prompt" : {
+    "amending" : false,
+    "body" : [
+      "Show short git status",
+      "git -C . status --short",
+      "This command requires approval"
+    ],
+    "cursor" : "1. Yes",
+    "kind" : "permission",
+    "options" : [
+      {
+        "label" : "Yes",
+        "n" : 1
+      },
+      {
+        "label" : "Yes, and don’t ask again for: git *",
+        "n" : 2
+      },
+      {
+        "label" : "Yes, and switch to auto mode · auto mode handles these prompts for you",
+        "n" : 3
+      },
+      {
+        "label" : "No",
+        "n" : 4
+      }
+    ],
+    "question" : "Do you want to proceed?",
+    "title" : "Bash command",
+    "typed" : 4
+  }
+}

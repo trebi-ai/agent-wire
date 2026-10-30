@@ -1,0 +1,19 @@
+cursor-agent --trust --force
+
+
+  Cursor Agent
+  v2026.07.23-e383d2b
+  Tip: Use /debug to instrument and debug complex problems.
+
+
+  What is 7 times 9? Reply with only the integer.
+
+
+  ⠄ Working
+
+
+  → Add a follow-up                                                                                     ctrl+c to stop
+
+
+  Auto                                                                                                  Run Everything
+  /tmp/fixture-workspace

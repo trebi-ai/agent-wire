@@ -1,0 +1,5 @@
+tool: grok
+version: 0.2.103
+date: 2026-07-18
+geometry: 120x40
+command: grok (ctrl+s opens the resume picker)

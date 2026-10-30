@@ -1,0 +1,43 @@
+{
+  "form" : {
+    "boxes" : {
+      "1" : true,
+      "2" : false,
+      "3" : false,
+      "4" : true
+    },
+    "cursor" : "Submit",
+    "headers" : [
+      "Store",
+      "Tests"
+    ],
+    "items" : [
+      {
+        "allowsOther" : false,
+        "id" : "q1",
+        "kind" : "multi",
+        "options" : [
+          {
+            "detail" : "Unit tests for individual functions and types.",
+            "label" : "Unit"
+          },
+          {
+            "detail" : "UI screenshot tests of rendered pages.",
+            "label" : "uishots"
+          },
+          {
+            "detail" : "Tests against live services.",
+            "label" : "Live"
+          },
+          {
+            "detail" : "❯    Submit",
+            "label" : "perf"
+          }
+        ],
+        "text" : "Which tests?"
+      }
+    ],
+    "review" : false
+  },
+  "prompt" : null
+}

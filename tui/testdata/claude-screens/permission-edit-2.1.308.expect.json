@@ -1,0 +1,30 @@
+{
+  "form" : null,
+  "prompt" : {
+    "amending" : false,
+    "body" : [
+      "../../../../-Users-alice-Projects-workshop-workspace-d5fcef0c-7455-4f95-b07e-34552b4e76b4-scratchpad-formlab/notes.md",
+      "1  hello",
+      "2 +world"
+    ],
+    "cursor" : "1. Yes",
+    "kind" : "permission",
+    "options" : [
+      {
+        "label" : "Yes",
+        "n" : 1
+      },
+      {
+        "label" : "Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session; Yes, and always allow access to /private/tmp/claude-501/-Users-alice-Projects-workshop-workspace-d5fcef0c-7455-4f95-b07e-34552b4e76b4-scratchpad-formlab for this session (shift+tab)",
+        "n" : 2
+      },
+      {
+        "label" : "No",
+        "n" : 3
+      }
+    ],
+    "question" : "Do you want to make this edit to notes.md?",
+    "title" : "Edit file",
+    "typed" : 3
+  }
+}

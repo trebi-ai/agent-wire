@@ -1,0 +1,39 @@
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  ╭─╮╭─╮                                                                                          │
+│  ╰─╯╰─╯  GitHub Copilot v1.0.27                                                                  │
+│  █ ▘▝ █  Describe a task to get started.                                                         │
+│   ▔▔▔▔                                                                                           │
+│  Tip: /init Initialize Copilot instructions for this repository.                                 │
+│  Copilot uses AI. Check for mistakes.                                                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+● 💡 No copilot instructions found. Run /init to generate a copilot-instructions.md file for this project.
+
+! Failed to load 10 skills. Run /skills for more details.
+
+
+
+
+
+
+
+
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Confirm folder trust                                                                                                 │
+│ ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+│ ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ │
+│ │ /private/var/folders/49/1zc24t595j79t5mw7_t9gtxr0000gn/T/capture-tui.g70mLq                                      │ │
+│ ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ │
+│                                                                                                                      │
+│ Copilot may read files in this folder. Reading untrusted files may lead Copilot to behave in unexpected ways. With   │
+│ your permission, Copilot may execute code or bash commands in this folder. Executing untrusted code is unsafe.       │
+│                                                                                                                      │
+│ Do you trust the files in this folder?                                                                               │
+│                                                                                                                      │
+│ ❯ 1. Yes                                                                                                             │
+│   2. Yes, and remember this folder for future sessions                                                               │
+│   3. No (Esc)                                                                                                        │
+│                                                                                                                      │
+│ ↑↓ to navigate · Enter to select · Esc to cancel                                                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

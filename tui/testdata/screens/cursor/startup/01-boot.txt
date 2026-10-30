@@ -1,0 +1,3 @@
+  Cursor Agent
+  v2026.07.23-e383d2b
+

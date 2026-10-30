@@ -1,0 +1,6 @@
+copilot 1.0.71, 2026-07-18, 120x40 tmux
+command: copilot (via myapp run copilot-live-check)
+"Set up terminal for multi-line input support" dialog — appears when
+TERM_PROGRAM=vscode leaks into the tmux session (myapp run from a VS Code
+terminal). Answer is escape ("No"): myapp must not write key bindings into the
+user's terminal config. State "setup": per-tool actions in setupActions.

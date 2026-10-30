@@ -1,0 +1,40 @@
+
+╭─── Claude Code v2.1.214 ─────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting started                                        │
+│                 Welcome back Alice!                │ Ask Claude to create a new app or clone a repository            │
+│                                                    │ ─────────────────────────────────────────────────────────────── │
+│                       ▐▛███▜▌                      │ What's new                                                      │
+│                      ▝▜█████▛▘                     │ Fixed single-segment `dir/**` allow rules like `Edit(src/**)` … │
+│                        ▘▘ ▝▝                       │ Fixed a permission-check bypass affecting commands run in Wind… │
+│      Fable 5 with xhigh effort · Claude Max ·      │ Fixed Bash permission checks to fail closed on file-descriptor… │
+│      alice1@email.com's Organization               │ /release-notes for more                                         │
+│               /…/T/capture-tui.EjyfGY              │                                                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                      ◉ xhigh · /effort
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Try "fix typecheck errors"
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                        /rc connecting…
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

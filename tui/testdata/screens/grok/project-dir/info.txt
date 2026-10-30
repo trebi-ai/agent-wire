@@ -1,0 +1,12 @@
+tool: grok
+version: grok 0.2.103 (89c3d36fb6f1) [stable]
+date: 2026-07-18
+geometry: 120x40
+command: grok --permission-mode default
+note: "Run Grok Build in a project directory?" picker. Appears on EVERY
+  session's first prompt submit in a directory grok has not been told to
+  remember — i.e. after readiness and after the prompt was pasted. IsReady
+  must reject it (no "│ ❯" input row) so a resumed/slow boot never pastes
+  into it, but HandleStartup cannot answer it: it renders post-submit.
+  Known automation hazard; grok queues the submitted prompt and continues
+  once a human answers.

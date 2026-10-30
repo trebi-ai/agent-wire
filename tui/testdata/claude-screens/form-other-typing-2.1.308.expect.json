@@ -1,0 +1,36 @@
+{
+  "form" : {
+    "cursor" : "4. liveSync",
+    "headers" : [
+      "Name"
+    ],
+    "items" : [
+      {
+        "allowsOther" : false,
+        "header" : "Name",
+        "id" : "q1",
+        "kind" : "single",
+        "options" : [
+          {
+            "detail" : "Sync runs automatically in the background.",
+            "label" : "autoSync"
+          },
+          {
+            "detail" : "Sync runs once when the app starts.",
+            "label" : "syncOnStart"
+          },
+          {
+            "detail" : "Sync runs only when you start it.",
+            "label" : "manual"
+          },
+          {
+            "label" : "liveSync"
+          }
+        ],
+        "text" : "Which name do you want for the new sync setting?"
+      }
+    ],
+    "review" : false
+  },
+  "prompt" : null
+}

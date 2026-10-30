@@ -1,0 +1,39 @@
+{
+  "form" : {
+    "boxes" : {
+      "1" : false,
+      "2" : false,
+      "3" : false,
+      "4" : false
+    },
+    "cursor" : "1. [ ] Unit",
+    "headers" : [
+      "Store",
+      "Tests"
+    ],
+    "items" : [
+      {
+        "allowsOther" : true,
+        "id" : "q1",
+        "kind" : "multi",
+        "options" : [
+          {
+            "detail" : "Unit tests for individual functions and types.",
+            "label" : "Unit"
+          },
+          {
+            "detail" : "UI screenshot tests of rendered pages.",
+            "label" : "uishots"
+          },
+          {
+            "detail" : "Tests against live services.",
+            "label" : "Live"
+          }
+        ],
+        "text" : "Which tests?"
+      }
+    ],
+    "review" : false
+  },
+  "prompt" : null
+}

@@ -1,0 +1,5 @@
+tool: opencode
+version: 1.15.7
+date: 2026-07-18
+geometry: 120x40
+command: opencode

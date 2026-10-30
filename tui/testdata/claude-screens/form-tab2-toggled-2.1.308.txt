@@ -1,0 +1,19 @@
+ ▐▛███▛█   Claude Code v2.1.308
+▝▜██████▀  Haiku 5.5 · Claude Max
+ ▝▝   ▝▝   /…/-Users-alice-Projects-workshop-workspace/d5fcef0c-7455-4f95-b07e-34552b4e76b4/scratchpad/formlab
+❯ Use AskUserQuestion once with two questions. Q1 header "Store" single: "Which store?" options SQLite, JSON. Q2 header
+  "Tests" multiSelect: "Which tests?" options Unit, uishots, Live. Then reply with the answers only.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Store  ☒ Tests  ✔ Submit  →
+Which tests?
+❯ 1. [✔] Unit
+         Unit tests for individual functions and types.
+  2. [ ] uishots
+         UI screenshot tests of rendered pages.
+  3. [ ] Live
+         Tests against live services.
+  4. [✔] Type something
+     Submit
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel

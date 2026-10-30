@@ -1,0 +1,22 @@
+ ▐▛███▛█   Claude Code v2.1.305
+▝▜██████▀  Haiku 5.5 · Claude Max
+ ▝▝   ▝▝   ~/Projects/workshop-workspace
+❯ Test of a UI. Do not read or change files. Call the AskUserQuestion tool once with two questions: 1) header
+  'Store', a long question of about 220 characters about which storage engine the sync service should use for the
+  event log when it runs on a small Mac with little disk, options SQLite, JSON files, Postgres; 2) header 'Tests',
+  multiSelect true, question 'Which tests do you want?', options Unit, Live, Snapshot. After the answer, reply with
+  one word: done.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Store  ☐ Tests  ✔ Submit  →
+Which tests do you want?
+❯ 1. [ ] Unit
+         Fast tests for each target, run with swift test.
+  2. [ ] Live
+         Read-only calls to real services. Runs only with WORKSHOP_LIVE=1.
+  3. [ ] Snapshot
+         Fixed UI screenshots from the fakes, via --uishots.
+  4. [ ] Type something
+     Submit
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel

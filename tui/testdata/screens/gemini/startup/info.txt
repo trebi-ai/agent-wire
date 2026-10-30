@@ -1,0 +1,5 @@
+tool: gemini
+version: 0.51.0
+date: 2026-07-18
+geometry: 120x40
+command: gemini

@@ -1,0 +1,39 @@
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  ╭─╮╭─╮                                                                                          │
+│  ╰─╯╰─╯  GitHub Copilot v1.0.27                                                                  │
+│  █ ▘▝ █  Describe a task to get started.                                                         │
+│   ▔▔▔▔                                                                                           │
+│  Tip: /init Initialize Copilot instructions for this repository.                                 │
+│  Copilot uses AI. Check for mistakes.                                                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+● 💡 No copilot instructions found. Run /init to generate a copilot-instructions.md file for this project.
+
+! Failed to load 10 skills. Run /skills for more details.
+
+● Environment loaded: 1 MCP server, 34 skills
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ /private/var/folders/49/1zc24t595j79t5mw7_t9gtxr0000gn/T/capture-tui.g70mLq                        GPT-5 mini (medium)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ v1.0.71 available · run /update · / commands · ? help ​                                          Remaining reqs.: 100%

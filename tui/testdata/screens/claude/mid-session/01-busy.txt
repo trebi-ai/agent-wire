@@ -1,0 +1,24 @@
+  well.
+
+  ---
+  The essay now runs to roughly 1,600 words. The three new sections are "Under
+  the Hood: Pseudoterminals and the Client-Server Design," "Copy Mode,
+  Scrollback, and Text as Interface," and "Configuration Culture and the Plugin
+  Ecosystem"; the remaining sections are expanded versions of the original
+  material.
+
+  MYAPP_TASK_COMPLETE
+
+✻ Crunched for 57s
+
+❯ Now add one more section about screen vs tmux history. Be thorough.
+
+✽ Composing… (9s · thinking with xhigh effort)
+  ⎿  Tip: Use ctrl+v to paste images from your clipboard
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  Fable 5 | 3.6 min | 39K (4%) | /private/tmp/claude-XXX/-Users-alice-Projects…
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+                                                                            /rc

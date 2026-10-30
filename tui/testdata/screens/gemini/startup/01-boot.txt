@@ -1,0 +1,2 @@
+gemini
+sh-3.2$ gemini

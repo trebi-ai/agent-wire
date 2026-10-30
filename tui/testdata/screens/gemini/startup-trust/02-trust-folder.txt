@@ -1,0 +1,24 @@
+4. Be specific for the best results
+
+ℹ Skipping project agents due to untrusted folder. To enable, ensure that the
+  project root is trusted.
+
+ ╭────────────────────────────────────────────────────────────────────────────╮
+ │                                                                            │
+ │ Do you trust the following folders being added to this workspace?          │
+ │ - /Users/dev/project                                               │
+ │ Trusting a folder allows Gemini to read and perform auto-edits when in     │
+ │ auto-approval mode. This is a security feature to prevent accidental       │
+ │ execution in untrusted directories.                                        │
+ │                                                                            │
+ │ ● 1. Yes                                                                   │
+ │   2. Yes, and remember the directories as trusted                          │
+ │   3. No                                                                    │
+ │                                                                            │
+ ╰────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+

@@ -1,0 +1,2 @@
+sh-3.2$ sh -c cd\ /private/var/folders/49/1zc24t595j79t5mw7_t9gtxr0000gn/T/capture-tui.EjyfGY\ \&\&\ exec\ claude\ --dan
+gerously-skip-permissions

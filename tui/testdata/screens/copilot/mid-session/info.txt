@@ -1,0 +1,5 @@
+tool: copilot
+version: GitHub Copilot CLI 1.0.71.
+date: 2026-07-18
+geometry: 120x40
+command: copilot

@@ -1,0 +1,23 @@
+  both in USA Taxes (netting to $0), remainder in Transfer. No reversion.
+  - notification-summary — ✅ complete (57s) and it successfully posted the
+  month-to-date summary to the Acmeo Finance group via whatsapp-cli (the fixed
+  path). No wacli, no block, no Discord alert — the fix works end-to-end.
+
+  I confirmed both to Alice and updated memory. The only remaining low-priority
+  item I flagged is retiring the old global wacli whatsapp skill so no other job
+  picks it up — his call whenever he wants.
+
+  MYAPP_TASK_COMPLETE_01KY4QF7JZRNSGAD36E2CN66DG
+
+✻ Crunched for 46s
+
+────────────────────────────────────────────────────────────────────────────────
+  This session is 3h 3m old and 235k tokens.
+
+  Resuming the full session will consume a substantial portion of your usage
+  limits. We recommend resuming from a summary.
+
+  ❯ 1. Resume from summary (recommended)
+    2. Resume full session as-is
+    3. Don't ask me again
+

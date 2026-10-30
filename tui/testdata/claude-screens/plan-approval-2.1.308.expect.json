@@ -1,0 +1,41 @@
+{
+  "form" : null,
+  "prompt" : {
+    "amending" : false,
+    "body" : [
+      "Here is Claude's plan:",
+      "Plan: Append \"world\" to notes.md",
+      "Context",
+      "notes.md holds the text hello. The goal is to append the word world.",
+      "Steps",
+      "1. Read notes.md in the formlab working directory. Confirm it contains hello and ends with a newline.",
+      "2. Append world on a new line with the Edit tool. The file then holds hello and world.",
+      "Verification",
+      "Read notes.md. Confirm the content is hello then world.",
+      "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+    ],
+    "cursor" : "1. Yes, clear context (6% used) and use auto mode",
+    "kind" : "plan",
+    "options" : [
+      {
+        "label" : "Yes, clear context (6% used) and use auto mode",
+        "n" : 1
+      },
+      {
+        "label" : "Yes, and use auto mode",
+        "n" : 2
+      },
+      {
+        "label" : "Yes, manually approve edits",
+        "n" : 3
+      },
+      {
+        "label" : "Tell Claude what to change",
+        "n" : 4
+      }
+    ],
+    "question" : "Claude has written up a plan and is ready to execute. Would you like to proceed?",
+    "title" : "Ready to code?",
+    "typed" : 4
+  }
+}

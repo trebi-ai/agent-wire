@@ -1,0 +1,2 @@
+codex
+sh-3.2$ codex

@@ -1,0 +1,8 @@
+gemini 0.51.0 (auto-updated from 0.17.0 mid-capture), 2026-07-18, 120x40 tmux
+command: gemini (via myapp run gemini-live-check)
+Folder-trust dialog introduced after 0.17: "Do you trust the files in this
+folder?" with "● 1. Trust folder" preselected. HandleStartup answers enter.
+Not present in the 0.17 startup scenario captured the same day.
+02: a second dialog follows — "Do you trust the following folders being added
+to this workspace?" listing the myapp invocation cwd. Also "● 1" preselected;
+enter answers both. Paths redacted (alice → dev).

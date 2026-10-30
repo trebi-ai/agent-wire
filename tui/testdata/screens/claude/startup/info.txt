@@ -1,0 +1,5 @@
+tool: claude
+version: 2.1.214 (Claude Code)
+date: 2026-07-18
+geometry: 120x40
+command: claude --dangerously-skip-permissions
