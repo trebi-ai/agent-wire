@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -329,5 +330,26 @@ func TestCoerceTime(t *testing.T) {
 		if got := coerceTime(c.in); !got.Equal(c.want) {
 			t.Errorf("coerceTime(%v) = %v, want %v", c.in, got, c.want)
 		}
+	}
+}
+
+func TestLoginCommandFor(t *testing.T) {
+	t.Parallel()
+	got, err := LoginCommandFor(Claude, LoginOptions{Separate: true})
+	if err != nil || strings.Join(got, " ") != "claude setup-token" {
+		t.Fatalf("claude separate: %v %v", got, err)
+	}
+	got, err = LoginCommandFor(OpenCode, LoginOptions{Provider: "openai"})
+	if err != nil || got[len(got)-1] != "ChatGPT Pro/Plus (headless)" {
+		t.Fatalf("opencode: %v %v", got, err)
+	}
+	if _, err := LoginCommandFor(OpenCode, LoginOptions{}); err == nil {
+		t.Fatal("opencode with no provider: no error")
+	}
+	if got, _ := LoginCommandFor(Codex, LoginOptions{Separate: true}); strings.Join(got, " ") != "codex login --device-auth" {
+		t.Fatalf("codex: %v", got)
+	}
+	if LoginTokenEnv(Claude) != "CLAUDE_CODE_OAUTH_TOKEN" || LoginTokenEnv(Codex) != "OPENAI_API_KEY" || LoginTokenEnv(OpenCode) != "" {
+		t.Fatal("token env keys")
 	}
 }

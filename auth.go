@@ -391,3 +391,49 @@ func coerceTime(v any) time.Time {
 	}
 	return time.Time{}
 }
+
+// LoginOptions picks a vendor login.
+type LoginOptions struct {
+	// Provider is the model provider of a harness that has many, such as
+	// OpenCode.
+	Provider string
+	// Separate is a login apart from the user's own login.
+	Separate bool
+}
+
+// openCodeBrowserMethods are the --method labels of the browser login of
+// each OpenCode provider.
+var openCodeBrowserMethods = map[string]string{"openai": "ChatGPT Pro/Plus (headless)"}
+
+// LoginCommandFor is LoginCommand for one login choice. A separate Claude
+// login makes a long-lived token, because the keychain entry belongs to the
+// user's own login. OpenCode needs a provider with a browser login.
+func LoginCommandFor(h Harness, o LoginOptions) ([]string, error) {
+	argv := LoginCommand(h)
+	switch {
+	case h == Claude && o.Separate:
+		return []string{binName(h), "setup-token"}, nil
+	case h == OpenCode || h == OpenCode2:
+		if o.Provider == "" {
+			return nil, fmt.Errorf("%w: choose a provider for the %s login", ErrUnsupported, h)
+		}
+		method, ok := openCodeBrowserMethods[o.Provider]
+		if !ok {
+			return nil, fmt.Errorf("%w: %s has no browser login; use a key", ErrUnsupported, o.Provider)
+		}
+		return append(argv, "--provider", o.Provider, "--method", method), nil
+	}
+	return argv, nil
+}
+
+// LoginTokenEnv is the env key that holds a token login of h, such as the
+// token that a separate Claude login prints. It is "" when h has none.
+func LoginTokenEnv(h Harness) string {
+	if h == Claude {
+		return "CLAUDE_CODE_OAUTH_TOKEN"
+	}
+	if keys := authEnvKeys[h]; len(keys) > 0 {
+		return keys[0]
+	}
+	return ""
+}

@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `HomeDefaults(h)` gives the values that a home needs to start with no first-run dialog and no self-update.
 - `HomeMCPFile(h)` and `SetHomeMCP(h, data, servers)` write MCP servers into the home file of Claude and grok.
 - `SharesUserHome(h)`, `LoginDir(h)`, and `SharedLoginEnv(h)` tell how a home uses the user's own login.
+- `LoginCommandFor(h, opts)` gives the login command for a provider or a separate login, and `LoginTokenEnv(h)` gives the env key of a token login.
 
 ## [v0.8.0] - 2026-10-30
 
