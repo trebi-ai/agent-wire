@@ -4,7 +4,17 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [v0.8.0] - Unreleased
+## [v0.9.0] - Unreleased
+
+### Added
+
+- `HomeFiles(h)` gives the file map of a harness home: the settings, plugins, skills, hooks, MCP, memory, and login files that a home can share with the user's own setup, with the default share of each. `HomeFileKind` tells how a file is shared: a link, a link for each entry of a folder, a copy of some keys, or a file that the vendor reads itself.
+- `MergeKeys`, `DropKeys`, and `SetKeys` change the keys of a JSON or TOML home file. `SetKeys` folds a repeated TOML table into the first.
+- `HomeDefaults(h)` gives the values that a home needs to start with no first-run dialog and no self-update.
+- `HomeMCPFile(h)` and `SetHomeMCP(h, data, servers)` write MCP servers into the home file of Claude and grok.
+- `SharesUserHome(h)`, `LoginDir(h)`, and `SharedLoginEnv(h)` tell how a home uses the user's own login.
+
+## [v0.8.0] - 2026-10-30
 
 ### Added
 

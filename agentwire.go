@@ -4,7 +4,7 @@
 //
 // One event model covers every harness. The library knows vendors; it does not
 // know consumers. Vendor flags, env vars, config formats, protocol quirks and
-// version floors live here. Homes such as ~/.trebi/harness, hooks, memory,
+// version floors live here. Product homes, hooks, memory,
 // secret env, job semantics and UI text belong to the caller.
 //
 // There is no global state: every cache, pool and ledger hangs off one
