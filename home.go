@@ -197,6 +197,45 @@ func SharedLoginEnv(h Harness) map[string]string {
 	return nil
 }
 
+// HomeTrustFile is the home file that holds the trusted folders of a
+// harness, or "" when the harness keeps no folder trust in its home.
+func HomeTrustFile(h Harness) string {
+	if h == Claude {
+		return ".claude.json"
+	}
+	return ""
+}
+
+// SetHomeTrust marks dirs as trusted in the trust file of a harness home and
+// gives the new content. The vendor CLI then shows no folder trust dialog
+// for them. It keeps the other fields of each folder entry.
+func SetHomeTrust(h Harness, data []byte, dirs []string) ([]byte, error) {
+	if h != Claude {
+		return nil, fmt.Errorf("%w: folder trust of %s", ErrUnsupported, h)
+	}
+	m, err := jsonObject(data)
+	if err != nil {
+		return nil, err
+	}
+	projects, _ := m["projects"].(map[string]any)
+	if projects == nil {
+		projects = map[string]any{}
+	}
+	for _, d := range dirs {
+		if d == "" {
+			continue
+		}
+		p, _ := projects[d].(map[string]any)
+		if p == nil {
+			p = map[string]any{}
+		}
+		p["hasTrustDialogAccepted"] = true
+		projects[d] = p
+	}
+	m["projects"] = projects
+	return jsonBytes(m)
+}
+
 // HomeMCPFile is the home file that holds the MCP servers of a harness, or
 // "" when the harness reads them from elsewhere.
 func HomeMCPFile(h Harness) string { return homeMCP[h] }

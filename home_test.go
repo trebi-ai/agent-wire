@@ -169,6 +169,42 @@ func TestSetHomeMCP(t *testing.T) {
 	}
 }
 
+func TestSetHomeTrust(t *testing.T) {
+	t.Parallel()
+	in := `{"projects":{"/a":{"allowedTools":["x"]},"/b":{"hasTrustDialogAccepted":false}},"y":2}`
+	out, err := SetHomeTrust(Claude, []byte(in), []string{"/a", "/b", "/c", ""})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m struct {
+		Projects map[string]struct {
+			Trusted bool     `json:"hasTrustDialogAccepted"`
+			Tools   []string `json:"allowedTools"`
+		} `json:"projects"`
+		Y int `json:"y"`
+	}
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m.Y != 2 || len(m.Projects) != 3 || len(m.Projects["/a"].Tools) != 1 {
+		t.Fatalf("other keys: %s", out)
+	}
+	for _, d := range []string{"/a", "/b", "/c"} {
+		if !m.Projects[d].Trusted {
+			t.Fatalf("%s not trusted: %s", d, out)
+		}
+	}
+	if out, err := SetHomeTrust(Claude, nil, []string{"/d"}); err != nil || !strings.Contains(string(out), `"/d"`) {
+		t.Fatalf("empty file: %s %v", out, err)
+	}
+	if HomeTrustFile(Claude) != ".claude.json" || HomeTrustFile(Codex) != "" {
+		t.Fatal("trust file")
+	}
+	if _, err := SetHomeTrust(Codex, nil, []string{"/a"}); err == nil {
+		t.Fatal("codex: no error")
+	}
+}
+
 func TestSessionFiles(t *testing.T) {
 	home := t.TempDir()
 	id := "56fc5395-9134-4a60-9bfb-6d2048569e1c"
