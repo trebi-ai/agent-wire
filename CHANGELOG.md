@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.11.0] - 2026-11-01
+
+### Added
+
+- `SessionFiles(h, home, id)` lists the files and folders that a harness keeps in its home for one vendor session: for Claude the transcript, the subagent folder, the session env, the file history, the tasks, and the todos; for Cursor the chat folder. A caller removes them to forget the session.
+
 ## [v0.10.0] - 2026-11-01
 
 ### Changed

@@ -2,6 +2,8 @@ package agentwire
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -164,5 +166,49 @@ func TestSetHomeMCP(t *testing.T) {
 	}
 	if _, err := SetHomeMCP(Pi, nil, servers); err == nil {
 		t.Fatal("pi: no error")
+	}
+}
+
+func TestSessionFiles(t *testing.T) {
+	home := t.TempDir()
+	id := "56fc5395-9134-4a60-9bfb-6d2048569e1c"
+	mk := func(p string, dir bool) {
+		p = filepath.Join(home, p)
+		if dir {
+			if err := os.MkdirAll(p, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("projects/-Users-me-repo/"+id+".jsonl", false)
+	mk("projects/-Users-me-repo/"+id+"/subagents", true)
+	mk("session-env/"+id, true)
+	mk("file-history/"+id, true)
+	mk("projects/-Users-me-repo/other.jsonl", false)
+	mk("session-env/other", true)
+
+	got := SessionFiles(Claude, home, id)
+	if len(got) != 4 {
+		t.Fatalf("SessionFiles = %v, want 4 paths", got)
+	}
+	for _, p := range got {
+		if !strings.Contains(p, id) {
+			t.Errorf("path %s is not of the session", p)
+		}
+	}
+	for _, bad := range []string{"", "*", "../x", "a/b", "..", "x?"} {
+		if got := SessionFiles(Claude, home, bad); len(got) != 0 {
+			t.Errorf("SessionFiles(%q) = %v, want none", bad, got)
+		}
+	}
+	if got := SessionFiles(Codex, home, id); len(got) != 0 {
+		t.Errorf("Codex = %v, want none", got)
 	}
 }

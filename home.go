@@ -568,3 +568,27 @@ func appendBlock(s, block string) string {
 	}
 	return s + block
 }
+
+// sessionGlobs are the paths of one vendor session in a harness home. %s is
+// the vendor session id.
+//
+//nolint:gochecknoglobals // a fixed table
+var sessionGlobs = map[Harness][]string{
+	Claude: {"projects/*/%s.jsonl", "projects/*/%s", "session-env/%s", "file-history/%s", "tasks/%s", "todos/%s-*.json"},
+	Cursor: {"chats/*/%s"},
+}
+
+// SessionFiles lists the files and folders that harness h keeps in home for
+// the vendor session id. Remove them to forget the session. The list is
+// empty when the harness keeps no such files or id is not a plain name.
+func SessionFiles(h Harness, home, id string) []string {
+	if home == "" || id == "" || id != filepath.Base(id) || strings.ContainsAny(id, `*?[]\.`) {
+		return nil
+	}
+	var out []string
+	for _, g := range sessionGlobs[h] {
+		m, _ := filepath.Glob(filepath.Join(home, fmt.Sprintf(g, id)))
+		out = append(out, m...)
+	}
+	return out
+}
