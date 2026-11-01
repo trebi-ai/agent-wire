@@ -265,7 +265,7 @@ func (rt *Runtime) runProbe(ctx context.Context, h Harness, bin string, args []s
 	if err != nil {
 		return fmt.Errorf("%s models: %w", h, err)
 	}
-	s, err := wire.Start(ctx, string(h), p, a, rt.wireConfig(""))
+	s, err := wire.Start(ctx, string(h), p, a, rt.wireConfig(StartRequest{}))
 	if err != nil {
 		if tail := proc.FirstLine(p.Stderr()); tail != "" {
 			return fmt.Errorf("%s models: %w (%s)", h, err, tail)

@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.10.0] - 2026-11-01
+
+### Changed
+
+- The frame log (`StartRequest.LogPath`) leaves out the stream fragments that a later complete frame repeats: Claude content block deltas and `thinking_tokens`, Codex delta notifications, and pi `message_update`. A recorded Claude session drops from 43 MB to 1.5 MB.
+- An error event or a failed exit writes an error line (`"dir":"error"`) to the frame log.
+
+### Added
+
+- `StartRequest.FragmentLogPath` gets the held fragments of the open message when the stream fails or ends inside a message.
+- `StartRequest.LogFragments` writes every fragment to the frame log, as before.
+
 ## [v0.9.0] - 2026-10-31
 
 ### Added

@@ -196,9 +196,15 @@ func TestDoneAndErrOnErrorEvent(t *testing.T) {
 func TestFrameLogRecordsBothDirections(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "frames.ndjson")
 	ad := &testAdapter{handshake: [][]byte{[]byte(`{"type":"user","text":"hello"}` + "\n")}}
-	stream := `{"type":"assistant","text":"hi"}` + "\n"
-	s := NewMemorySession("test", ad, io.Discard, strings.NewReader(stream),
+	// The peer answers after the handshake, so the out frame is logged
+	// before the stream ends.
+	pr, pw := io.Pipe()
+	s := NewMemorySession("test", ad, io.Discard, pr,
 		context.Background(), Config{LogPath: path})
+	go func() {
+		_, _ = io.WriteString(pw, `{"type":"assistant","text":"hi"}`+"\n")
+		_ = pw.Close()
+	}()
 
 	collect(t, s)
 	waitDone(t, s)

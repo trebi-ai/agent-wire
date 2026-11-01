@@ -114,7 +114,7 @@ func (d acpDriver) start(ctx context.Context, req StartRequest, resume bool) (Se
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", d.kind, err)
 	}
-	s, err := wire.Start(ctx, string(d.kind.harness()), p, proto, d.rt.wireConfig(req.LogPath))
+	s, err := wire.Start(ctx, string(d.kind.harness()), p, proto, d.rt.wireConfig(req))
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", d.kind, err)
 	}

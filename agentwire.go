@@ -194,9 +194,15 @@ type StartRequest struct {
 	// and "sandbox" (string, Codex), "auth_method" (string, ACP).
 	Raw map[string]any
 
-	// LogPath writes every frame in and out as NDJSON. Secrets are not
-	// redacted, so the file is created mode 0600.
+	// LogPath writes the frames in and out as NDJSON. Secrets are not
+	// redacted, so the file is created mode 0600. Stream fragments that a
+	// later complete frame repeats are left out unless LogFragments is set.
 	LogPath string
+	// FragmentLogPath gets the buffered fragments of the open message when
+	// the stream fails or ends before the complete message. Empty drops them.
+	FragmentLogPath string
+	// LogFragments writes every stream fragment to LogPath (debug).
+	LogFragments bool
 	// FS is the optional ACP file-system adapter.
 	FS FileSystem
 	// OnStderr receives live stderr lines from this child.

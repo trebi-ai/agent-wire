@@ -172,7 +172,11 @@ case agentwire.DeliveryHeld:
 | `Home` | Isolates the harness config home. Empty uses the user's own configuration and login. |
 | `Raw` | Per-harness overrides the typed fields do not cover, for example `strict_mcp` (Claude) or `approvalPolicy` and `sandbox` (Codex). |
 
-Other escape hatches: `ExtraArgs` appends consumer flags verbatim, `BaseCommand` skips the launch builder, `LogPath` writes every frame in and out as NDJSON, and `FS` routes ACP file reads and writes to the caller so it can see every edit.
+Other escape hatches: `ExtraArgs` appends consumer flags verbatim, `BaseCommand` skips the launch builder, `LogPath` writes the frames in and out as NDJSON (see "Frame log" below), and `FS` routes ACP file reads and writes to the caller so it can see every edit.
+
+### Frame log
+
+`StartRequest.LogPath` keeps a debug trail of the frames in and out. Claude, Codex, and pi stream each message in small fragments and then send the complete message again. The log leaves out these fragments. It holds the fragments of the open message in memory. When an error event or a failed exit occurs, the log writes an error line (`"dir":"error"`). When the stream fails or ends inside a message, the library also writes the held fragments to `FragmentLogPath`. Set `LogFragments` to write every fragment to the log. ACP sends no complete message, so its chunks stay in the log.
 
 ## Vendor binaries and logins
 

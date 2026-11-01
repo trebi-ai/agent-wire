@@ -10,6 +10,7 @@ package wire
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -127,41 +128,133 @@ type Session struct {
 type Config struct {
 	// MaxFrameBytes bounds one frame. Zero uses DefaultMaxFrameBytes.
 	MaxFrameBytes int
-	// LogPath records every frame in and out as NDJSON, one line per frame.
-	// Secrets are not redacted, so the file is created mode 0600.
+	// LogPath records the frames in and out as NDJSON, one line per frame.
+	// Secrets are not redacted, so the file is created mode 0600. Stream
+	// fragments are left out unless LogFragments is set.
 	LogPath string
+	// FragmentLogPath gets the buffered fragments of the open message when
+	// the stream fails or ends before the complete message, mode 0600.
+	FragmentLogPath string
+	// LogFragments writes every fragment to LogPath.
+	LogFragments bool
 }
 
-// frameLog writes raw frames for a debug trail.
+// FragmentClassifier is implemented by adapters whose protocol streams part
+// of a message that a later complete frame repeats.
+type FragmentClassifier interface {
+	Fragment(line []byte) bool
+}
+
+// maxFragmentBytes caps the fragment buffer; the oldest fragments go first.
+const maxFragmentBytes = 8 << 20
+
+// frameLog writes raw frames for a debug trail. It holds the fragments of
+// the open message in memory and writes them to a separate file only when
+// the stream fails or ends early.
 type frameLog struct {
-	mu sync.Mutex
-	f  *os.File
+	mu       sync.Mutex
+	f        *os.File
+	fragPath string
+	full     bool
+	frags    [][]byte
+	size     int
+	max      int
 }
 
-func openFrameLog(path string) (*frameLog, error) {
-	if path == "" {
+func openFrameLog(cfg Config) (*frameLog, error) {
+	if cfg.LogPath == "" {
 		return nil, nil
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	f, err := os.OpenFile(cfg.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("frame log: %w", err)
 	}
-	return &frameLog{f: f}, nil
+	return &frameLog{f: f, fragPath: cfg.FragmentLogPath, full: cfg.LogFragments, max: maxFragmentBytes}, nil
 }
 
-func (l *frameLog) write(dir string, frame []byte) {
-	if l == nil {
-		return
-	}
+func logEntry(dir string, frame []byte) []byte {
 	entry, err := json.Marshal(map[string]any{
 		"at": time.Now().UTC().Format(time.RFC3339Nano), "dir": dir, "frame": json.RawMessage(frame),
 	})
 	if err != nil {
+		return nil
+	}
+	return append(entry, '\n')
+}
+
+// write logs one frame. A fragment goes to the buffer; a complete frame
+// from the child ends the open message and clears the buffer.
+func (l *frameLog) write(dir string, frame []byte, fragment bool) {
+	if l == nil {
+		return
+	}
+	entry := logEntry(dir, frame)
+	if entry == nil {
 		return
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	_, _ = l.f.Write(append(entry, '\n'))
+	if fragment && !l.full {
+		l.frags = append(l.frags, entry)
+		l.size += len(entry)
+		for l.size > l.max && len(l.frags) > 1 {
+			l.size -= len(l.frags[0])
+			l.frags = l.frags[1:]
+		}
+		return
+	}
+	if dir == "in" {
+		l.frags, l.size = nil, 0
+	}
+	_, _ = l.f.Write(entry)
+}
+
+// fail logs an error line and keeps the buffered fragments for analysis.
+func (l *frameLog) fail(code, msg string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entry, err := json.Marshal(map[string]any{
+		"at": time.Now().UTC().Format(time.RFC3339Nano), "dir": "error",
+		"error": map[string]any{"code": code, "message": msg, "fragments": len(l.frags)},
+	})
+	if err != nil {
+		return
+	}
+	entry = append(entry, '\n')
+	_, _ = l.f.Write(entry)
+	if len(l.frags) == 0 || l.fragPath == "" {
+		l.frags, l.size = nil, 0
+		return
+	}
+	f, err := os.OpenFile(l.fragPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err == nil {
+		_, _ = f.Write(entry)
+		for _, e := range l.frags {
+			_, _ = f.Write(e)
+		}
+		_ = f.Close()
+	}
+	l.frags, l.size = nil, 0
+}
+
+// open tells if fragments of a message wait for the complete frame.
+func (l *frameLog) open() bool {
+	if l == nil {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.frags) > 0
+}
+
+// endStream records a stream that ended inside a message.
+func (l *frameLog) endStream() {
+	if l.open() {
+		l.fail("incomplete_stream", "the stream ended before the complete message")
+	}
 }
 
 func (l *frameLog) close() {
@@ -212,6 +305,7 @@ func NewMemorySession(harness string, adapter Adapter, stdin io.Writer, stdout i
 	go func() {
 		s.scan(stdout)
 		s.dropHeld()
+		s.log.endStream()
 		s.finish()
 	}()
 	w := &Writer{s: s}
@@ -233,7 +327,7 @@ func newSession(harness string, p *proc.Proc, adapter Adapter, cfg Config) (*Ses
 	if maxFrame <= 0 {
 		maxFrame = DefaultMaxFrameBytes
 	}
-	log, err := openFrameLog(cfg.LogPath)
+	log, err := openFrameLog(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -364,6 +458,12 @@ func (s *Session) bumpTurn() int {
 	return s.turn
 }
 
+// fragment tells if the adapter marks line as part of a message.
+func (s *Session) fragment(line []byte) bool {
+	fc, ok := s.adapter.(FragmentClassifier)
+	return ok && fc.Fragment(line)
+}
+
 func (s *Session) emit(e Event) {
 	if e.At.IsZero() {
 		e.At = time.Now()
@@ -382,6 +482,9 @@ func (s *Session) emit(e Event) {
 		} else if e.Code != "" {
 			s.recordErr(errors.New(e.Code))
 		}
+	}
+	if (e.Type == EventError || e.Type == EventExit) && (e.Error != "" || e.Code != "") {
+		s.log.fail(cmp.Or(e.Code, string(e.Type)), e.Error)
 	}
 	s.emitMu.Lock()
 	defer s.emitMu.Unlock()
@@ -408,7 +511,7 @@ func (s *Session) write(b []byte) error {
 	if s.stdin == nil {
 		return errNoStdin
 	}
-	s.log.write("out", bytes.TrimSpace(b))
+	s.log.write("out", bytes.TrimSpace(b), false)
 	_, err := s.stdin.Write(b)
 	return err
 }
@@ -597,6 +700,7 @@ func (s *Session) readLoop() {
 	}
 	s.dropHeld()
 	s.exitEvent(code, err, stderr)
+	s.log.endStream()
 	s.finish()
 }
 
@@ -630,7 +734,8 @@ func (s *Session) scan(r io.Reader) {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
-		s.log.write("in", bytes.TrimSpace(line))
+		// Emit first: an error event must keep the fragments that the
+		// complete frame would clear.
 		for _, e := range s.adapter.Parse(line) {
 			if len(e.Raw) == 0 {
 				e.Raw = append([]byte(nil), line...)
@@ -644,6 +749,8 @@ func (s *Session) scan(r io.Reader) {
 			}
 			s.emit(e)
 		}
+		trimmed := bytes.TrimSpace(line)
+		s.log.write("in", trimmed, s.fragment(trimmed))
 	}
 }
 

@@ -1,6 +1,7 @@
 package agentwire
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -43,7 +44,7 @@ func (d piDriver) start(ctx context.Context, req StartRequest, resume bool) (Ses
 		return nil, fmt.Errorf("pi: %w", err)
 	}
 	proto := newPiProtocol(req.Permissions, l.instructions)
-	s, err := wire.Start(ctx, string(Pi), p, proto, d.rt.wireConfig(req.LogPath))
+	s, err := wire.Start(ctx, string(Pi), p, proto, d.rt.wireConfig(req))
 	if err != nil {
 		return nil, fmt.Errorf("pi: %w", err)
 	}
@@ -333,6 +334,17 @@ func (p *piProtocol) EncodeDecision(id string, d Decision) ([]byte, error) {
 	return wire.JSONLine(map[string]any{
 		"type": "permission_response", "id": id, "approved": d.Allow, "message": d.Message,
 	})
+}
+
+// Fragment marks message_update frames. message_end repeats the message.
+func (p *piProtocol) Fragment(line []byte) bool {
+	if !bytes.Contains(line, []byte(`"message_update"`)) {
+		return false
+	}
+	var f struct {
+		Type string `json:"type"`
+	}
+	return json.Unmarshal(line, &f) == nil && f.Type == "message_update"
 }
 
 func (p *piProtocol) Parse(line []byte) []Event {

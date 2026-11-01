@@ -1,6 +1,7 @@
 package agentwire
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -58,7 +59,7 @@ func (d codexDriver) start(ctx context.Context, req StartRequest, resume bool) (
 	if err != nil {
 		return nil, fmt.Errorf("codex: %w", err)
 	}
-	s, err := wire.Start(ctx, string(Codex), p, proto, d.rt.wireConfig(req.LogPath))
+	s, err := wire.Start(ctx, string(Codex), p, proto, d.rt.wireConfig(req))
 	if err != nil {
 		return nil, fmt.Errorf("codex: %w", err)
 	}
@@ -570,6 +571,21 @@ func codexDecisionResult(method string, d Decision) map[string]any {
 }
 
 // Parse routes responses to the client and maps notifications to events.
+// Fragment marks the delta notifications. item/completed repeats them.
+func (p *codexProtocol) Fragment(line []byte) bool {
+	if !bytes.Contains(line, []byte("elta")) {
+		return false
+	}
+	var f struct {
+		ID     json.RawMessage `json:"id"`
+		Method string          `json:"method"`
+	}
+	if json.Unmarshal(line, &f) != nil || len(f.ID) > 0 {
+		return false
+	}
+	return strings.HasSuffix(f.Method, "/delta") || strings.HasSuffix(f.Method, "Delta") || strings.HasSuffix(f.Method, "_delta")
+}
+
 func (p *codexProtocol) Parse(line []byte) []Event {
 	kind, msg := p.client.Handle(line)
 	switch kind {

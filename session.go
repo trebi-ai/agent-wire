@@ -7,8 +7,8 @@ import (
 )
 
 // wireConfig is the framing configuration for one session.
-func (rt *Runtime) wireConfig(logPath string) wire.Config {
-	return wire.Config{MaxFrameBytes: rt.maxFr, LogPath: logPath}
+func (rt *Runtime) wireConfig(req StartRequest) wire.Config {
+	return wire.Config{MaxFrameBytes: rt.maxFr, LogPath: req.LogPath, FragmentLogPath: req.FragmentLogPath, LogFragments: req.LogFragments}
 }
 
 // stderrHook combines the runtime-level stderr hook with a request-level one.

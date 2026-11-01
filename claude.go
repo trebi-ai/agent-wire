@@ -1,6 +1,7 @@
 package agentwire
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -61,7 +62,7 @@ func (d claudeDriver) start(ctx context.Context, req StartRequest, resume bool) 
 		return nil, fmt.Errorf("claude: %w", err)
 	}
 	proto := newClaudeProtocol(d.rt, req.Permissions)
-	s, err := wire.Start(ctx, string(Claude), p, proto, d.rt.wireConfig(req.LogPath))
+	s, err := wire.Start(ctx, string(Claude), p, proto, d.rt.wireConfig(req))
 	if err != nil {
 		return nil, fmt.Errorf("claude: %w", err)
 	}
@@ -452,6 +453,26 @@ func (p *claudeProtocol) EncodeDecision(id string, d Decision) ([]byte, error) {
 }
 
 // Parse maps one stdout frame to normalized events.
+// Fragment marks the partial-message frames: content block deltas and the
+// running thinking token count. The complete assistant frame repeats them.
+func (p *claudeProtocol) Fragment(line []byte) bool {
+	if !bytes.Contains(line, []byte(`"stream_event"`)) && !bytes.Contains(line, []byte(`"thinking_tokens"`)) {
+		return false
+	}
+	var f struct {
+		Type    string `json:"type"`
+		Subtype string `json:"subtype"`
+		Event   struct {
+			Type string `json:"type"`
+		} `json:"event"`
+	}
+	if json.Unmarshal(line, &f) != nil {
+		return false
+	}
+	return (f.Type == "stream_event" && f.Event.Type == "content_block_delta") ||
+		(f.Type == "system" && f.Subtype == "thinking_tokens")
+}
+
 func (p *claudeProtocol) Parse(line []byte) []Event {
 	trimmed := strings.TrimSpace(string(line))
 	if trimmed == "" {
