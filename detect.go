@@ -276,13 +276,25 @@ func (c *versionCache) flag(ctx context.Context, bin, flag string) bool {
 // probeVersion runs `<bin> --version` with a short deadline.
 func probeVersion(ctx context.Context, bin string) string {
 	out, err := runProbe(ctx, bin, "--version")
-	if err != nil || len(out) == 0 {
+	if err != nil {
 		return ""
 	}
-	line := strings.TrimSpace(string(out))
-	if i := strings.IndexByte(line, '\n'); i > 0 {
-		line = line[:i]
+	return versionLine(string(out))
+}
+
+// versionLine picks the first line with a version number, so that a warning
+// on stderr does not become the version. With no such line, it gives the
+// first line.
+func versionLine(out string) string {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	line := lines[0]
+	for _, l := range lines {
+		if _, _, _, ok := parseSemver(l); ok {
+			line = l
+			break
+		}
 	}
+	line = strings.TrimSpace(line)
 	if len(line) > 120 {
 		line = line[:120]
 	}

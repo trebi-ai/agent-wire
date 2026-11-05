@@ -368,3 +368,18 @@ func TestDetectConcurrentMissRunsOneProbe(t *testing.T) {
 		t.Fatalf("auth probe ran %d times under concurrency, want 1", got)
 	}
 }
+
+func TestVersionLine(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"codex-cli 0.166.0\n", "codex-cli 0.166.0"},
+		{"WARNING: proceeding, even though we could not create PATH aliases: operation would block\ncodex-cli 0.166.0\n", "codex-cli 0.166.0"},
+		{"grok 1.0.70 (f50904eaee6c) [stable]\r\n", "grok 1.0.70 (f50904eaee6c) [stable]"},
+		{"no number here\nsecond line\n", "no number here"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := versionLine(tc.in); got != tc.want {
+			t.Errorf("versionLine(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
