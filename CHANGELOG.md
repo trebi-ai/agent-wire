@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - `FakeDriver` takes `"delta":true` on an assistant line and sends it as a delta.
+- `FakeDriver`: the `usage` of a `result` line also takes `cache_read` and `cost_usd`.
 
 ## [v0.12.0] - 2026-11-01
 

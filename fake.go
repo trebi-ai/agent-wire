@@ -223,7 +223,10 @@ func (p *fakeProtocol) Parse(line []byte) []Event {
 		}
 		if u, ok := m["usage"].(map[string]any); ok {
 			model, _ := u["model"].(string)
-			res.Usage = Usage{Input: int64(num(u["input"])), Output: int64(num(u["output"])), Model: model}
+			res.Usage = Usage{
+				Input: int64(num(u["input"])), Output: int64(num(u["output"])),
+				CacheRead: int64(num(u["cache_read"])), Model: model, CostUSD: num(u["cost_usd"]),
+			}
 		}
 		return []Event{{Type: EventResult, Result: res}}
 	case "error":
