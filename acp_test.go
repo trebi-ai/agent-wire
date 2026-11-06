@@ -1502,6 +1502,10 @@ func TestACPTurnUsage(t *testing.T) {
 				"sessionUpdate": "usage_update", "used": 1, "size": 2,
 				"cost": map[string]any{"amount": 0.5, "currency": "USD"},
 			}))
+			// The driver reads frames in order, so the marker shows that the
+			// update above is in.
+			coaTestChunk(peer, "marker")
+			events.next(EventAssistant)
 			id := coaTestPromptID(t, coaTestMustEncode(t, proto, "go"), "session/prompt")
 			for _, c := range tc.session {
 				peer.notify("session/update", coaTestUpdate("ses_1", map[string]any{
