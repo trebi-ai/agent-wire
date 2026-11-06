@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -1004,5 +1005,24 @@ func cpTestLimitWindows(t *testing.T, got, want []LimitWindow) {
 		if g.Key != w.Key || g.Scope != w.Scope || g.Minutes != w.Minutes || !g.ResetsAt.Equal(w.ResetsAt) || math.Abs(g.UsedPercent-w.UsedPercent) > 1e-9 {
 			t.Fatalf("window %d = %+v, want %+v", i, g, w)
 		}
+	}
+}
+
+// TestClaudeTurnCost checks that each result carries the cost of its own turn:
+// total_cost_usd counts all turns of the process.
+func TestClaudeTurnCost(t *testing.T) {
+	t.Parallel()
+	proto := cpTestClaudeProto(t, PermissionPolicy{})
+	var got []float64
+	for _, total := range []string{"1.0", "1.25", "0.5"} {
+		for _, e := range proto.Parse([]byte(`{"type":"result","subtype":"success","is_error":false,"result":"ok","total_cost_usd":` + total + `}`)) {
+			if e.Type == EventResult {
+				got = append(got, e.Result.Usage.CostUSD)
+			}
+		}
+	}
+	// A total that goes down is a new count, so it is the turn cost.
+	if want := []float64{1.0, 0.25, 0.5}; !slices.Equal(got, want) {
+		t.Fatalf("turn costs = %v, want %v", got, want)
 	}
 }

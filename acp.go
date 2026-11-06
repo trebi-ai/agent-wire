@@ -412,8 +412,12 @@ type acpProtocol struct {
 	promptID  string
 	sawResult bool
 	// text holds the chunks of the current assistant message block.
-	text        strings.Builder
-	approvals   map[string][]acpOption
+	text      strings.Builder
+	approvals map[string][]acpOption
+	// sessionCost is the last USD session cost of usage_update; costBase is
+	// its value when the current turn started.
+	sessionCost float64
+	costBase    float64
 	authMethods []string
 	// steering reports the top-level _meta.steering.supported of initialize.
 	steering bool
@@ -1032,6 +1036,7 @@ func (p *acpProtocol) EncodePrompt(pr Prompt) ([]byte, error) {
 	}
 	p.sawResult = false
 	p.text.Reset()
+	p.costBase = p.sessionCost
 	id := p.client.NextID()
 	p.promptID = string(id.Raw())
 	sessionID := p.sessionID
@@ -1232,8 +1237,12 @@ func (p *acpProtocol) mapUpdate(update map[string]any) []Event {
 		}
 		return []Event{{Type: EventStatus, Status: StatusRunning}}
 	case "usage_update":
-		if u := acpUsage(update); u != nil {
-			return []Event{{Type: EventUsage, Usage: u}}
+		// used and size are the context fill and the window, not turn
+		// tokens. Only the session cost counts.
+		if cost, ok := acpCostUSD(update["cost"]); ok {
+			p.mu.Lock()
+			p.sessionCost = cost
+			p.mu.Unlock()
 		}
 	case "tool_call":
 		return []Event{{Type: EventTool, Tool: p.toolEvent(update, "started")}}
@@ -1314,44 +1323,64 @@ func (p *acpProtocol) parseResponse(msg jsonrpc.Message) []Event {
 		return append(out, Event{Type: EventError, Error: text, Code: c.Code, EndReason: string(c.Class)})
 	}
 	var res struct {
-		StopReason string          `json:"stopReason"`
-		Usage      json.RawMessage `json:"usage"`
-		Meta       struct {
-			Usage            json.RawMessage `json:"usage"`
-			InputTokens      int64           `json:"inputTokens"`
-			OutputTokens     int64           `json:"outputTokens"`
-			CachedReadTokens int64           `json:"cachedReadTokens"`
-		} `json:"_meta"`
+		StopReason string `json:"stopReason"`
 	}
 	_ = json.Unmarshal(msg.Result, &res)
-	usage := acpUsageRaw(res.Usage)
-	if usage == nil && len(res.Meta.Usage) > 0 {
-		// grok reports the turn usage under _meta.
-		usage = acpUsageRaw(res.Meta.Usage)
-	}
-	if usage == nil && (res.Meta.InputTokens != 0 || res.Meta.OutputTokens != 0 || res.Meta.CachedReadTokens != 0) {
-		usage = &Usage{
-			Input:     res.Meta.InputTokens,
-			Output:    res.Meta.OutputTokens,
-			CacheRead: res.Meta.CachedReadTokens,
-		}
-	}
+	usage := p.turnUsage(msg.Result)
 	if usage != nil {
 		out = append(out, Event{Type: EventUsage, Usage: usage})
 	}
+	var result *Result
 	switch res.StopReason {
 	case "", "end_turn":
-		out = append(out, Event{Type: EventResult, Result: &Result{Subtype: "success"}})
+		result = &Result{Subtype: "success"}
 	case "cancelled":
-		out = append(out, Event{Type: EventResult, Result: &Result{Subtype: "cancelled", IsError: true, Text: "turn cancelled"}})
+		result = &Result{Subtype: "cancelled", IsError: true, Text: "turn cancelled"}
 	default:
 		c := ClassifyFor(p.kind.harness(), res.StopReason, 0)
-		out = append(out, Event{Type: EventResult, Result: &Result{
+		result = &Result{
 			Subtype: res.StopReason, IsError: true, Text: "stop: " + res.StopReason,
 			EndReason: string(c.Class), Code: c.Code,
-		}})
+		}
 	}
-	return out
+	if usage != nil {
+		result.Usage = *usage
+	}
+	return append(out, Event{Type: EventResult, Result: result})
+}
+
+// turnUsage reads the usage of a prompt response: the ACP usage field, else
+// the grok _meta.usage, else the flat _meta counters. Without a turn cost,
+// the cost is the change of the usage_update session cost in the turn.
+func (p *acpProtocol) turnUsage(raw json.RawMessage) *Usage {
+	res, _ := jsonObject(raw)
+	meta, _ := res["_meta"].(map[string]any)
+	usage, _ := res["usage"].(map[string]any)
+	u := acpUsageObject(usage)
+	if u == nil {
+		metaUsage, _ := meta["usage"].(map[string]any)
+		u = acpUsageObject(metaUsage)
+	}
+	if u == nil {
+		u = acpUsageObject(meta)
+	}
+	p.mu.Lock()
+	turnCost := p.sessionCost - p.costBase
+	p.costBase = p.sessionCost
+	p.mu.Unlock()
+	if u == nil {
+		if turnCost <= 0 {
+			return nil
+		}
+		u = &Usage{}
+	}
+	if u.CostUSD == 0 && turnCost > 0 {
+		u.CostUSD = turnCost
+	}
+	if u.Model == "" {
+		u.Model = str(meta["modelId"])
+	}
+	return u
 }
 
 // handleAgentRequest answers a peer request: a permission prompt, a file
@@ -1498,48 +1527,59 @@ func acpSessionID(raw json.RawMessage) string {
 	return res.SessionID
 }
 
-// acpUsage maps a usage_update notification.
-func acpUsage(update map[string]any) *Usage {
-	u := &Usage{
-		Input:   int64(num(update["used"])),
-		Output:  int64(num(update["size"])),
-		CostUSD: acpCost(update["cost"]),
-	}
-	if u.Input == 0 && u.Output == 0 && u.CostUSD == 0 {
+// usdTicks is the xAI cost unit: 1 USD is 10^10 ticks.
+const usdTicks = 1e10
+
+// acpUsageObject maps one turn usage object. Input does not include the
+// cache reads, as in the other drivers. When the total is input plus output
+// (grok), the input includes the cache reads, so they come off.
+func acpUsageObject(m map[string]any) *Usage {
+	if m == nil {
 		return nil
+	}
+	pick := func(keys ...string) float64 {
+		for _, k := range keys {
+			if v := num(m[k]); v != 0 {
+				return v
+			}
+		}
+		return 0
+	}
+	u := &Usage{
+		Input:         int64(pick("inputTokens", "input_tokens")),
+		Output:        int64(pick("outputTokens", "output_tokens")),
+		CacheRead:     int64(pick("cachedReadTokens", "cached_read_tokens")),
+		CacheCreation: int64(pick("cachedWriteTokens", "cached_write_tokens", "cacheCreationTokens")),
+	}
+	if u.Input == 0 && u.Output == 0 && u.CacheRead == 0 && u.CacheCreation == 0 {
+		return nil
+	}
+	total := int64(pick("totalTokens", "total_tokens"))
+	if u.CacheRead > 0 && u.CacheRead <= u.Input && total == u.Input+u.Output {
+		u.Input -= u.CacheRead
+	}
+	if cost, ok := acpCostUSD(m["cost"]); ok {
+		u.CostUSD = cost
+	} else if ticks := num(m["costUsdTicks"]); ticks > 0 {
+		u.CostUSD = ticks / usdTicks
 	}
 	return u
 }
 
-// acpUsageRaw maps the usage object of a prompt response.
-func acpUsageRaw(raw json.RawMessage) *Usage {
-	if len(raw) == 0 {
-		return nil
-	}
-	var m map[string]any
-	if json.Unmarshal(raw, &m) != nil {
-		return nil
-	}
-	u := &Usage{
-		Input:         int64(num(m["inputTokens"]) + num(m["input_tokens"])),
-		Output:        int64(num(m["outputTokens"]) + num(m["output_tokens"])),
-		CacheRead:     int64(num(m["cachedReadTokens"]) + num(m["cached_read_tokens"])),
-		CacheCreation: int64(num(m["cachedWriteTokens"]) + num(m["cached_write_tokens"])),
-		CostUSD:       acpCost(m["cost"]),
-	}
-	if u.Input == 0 && u.Output == 0 && u.CacheRead == 0 && u.CacheCreation == 0 && u.CostUSD == 0 {
-		return nil
-	}
-	return u
-}
-
-func acpCost(v any) float64 {
+// acpCostUSD reads an ACP cost, {amount, currency} or a number. A cost in
+// another currency does not count.
+func acpCostUSD(v any) (float64, bool) {
 	switch t := v.(type) {
 	case map[string]any:
-		return num(t["amount"])
-	default:
-		return num(v)
+		if c := str(t["currency"]); c != "" && !strings.EqualFold(c, "USD") {
+			return 0, false
+		}
+		amount, ok := t["amount"].(float64)
+		return amount, ok
+	case float64:
+		return t, true
 	}
+	return 0, false
 }
 
 // ensure the driver and the protocol satisfy their interfaces.

@@ -139,7 +139,8 @@ type Usage struct {
 	CacheRead     int64
 	CacheCreation int64
 	Model         string
-	CostUSD       float64
+	// CostUSD is the cost of one turn as the agent reports it; 0 when unknown.
+	CostUSD float64
 }
 
 // Window keys of a LimitWindow.

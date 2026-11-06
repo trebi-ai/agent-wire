@@ -9,6 +9,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - ACP drivers (Copilot, Cursor, Gemini, omp, grok) send each `agent_message_chunk` as an assistant delta (`Delta: true`). The complete message block comes as one assistant event before the next update, the permission request, the turn result, or the exit. Before, each chunk was a complete message, so an agent that sends one token per chunk gave one turn per token.
+- ACP: the turn `Result.Usage` carries the token usage of the turn, as the Codex result does. The driver reads the ACP `usage` field of the prompt response, then the grok `_meta.usage`, then the flat `_meta` counters. `Input` does not include the cache reads: when the total is input plus output (grok), the cache reads come off the input. `cacheCreationTokens` maps to `CacheCreation`, and `_meta.modelId` gives `Model`. Before, only the usage event had the tokens, and the result had none.
+- ACP: `usage_update` sends no usage event. Its `used` and `size` are the context fill and the context window, not turn tokens. Before, the driver sent them as input and output tokens.
+- ACP: `Usage.CostUSD` is the cost of the turn: grok `costUsdTicks` (10^10 ticks per USD), else the change of the `usage_update` session cost in the turn. A cost in a currency other than USD does not count.
+- Claude: `Result.Usage.CostUSD` is the cost of the turn. `total_cost_usd` counts all turns of the process, so the driver sends the change since the previous result. Before, each result had the process total.
 
 ### Added
 

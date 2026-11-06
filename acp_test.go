@@ -193,16 +193,6 @@ func TestACPUpdates(t *testing.T) {
 		t.Fatalf("tool_call_update output: %q", failed.Tool.Output)
 	}
 
-	peer.notify("session/update", coaTestUpdate("ses_1", map[string]any{
-		"sessionUpdate": "usage_update",
-		"used":          12,
-		"size":          4,
-	}))
-	usage := events.next(EventUsage)
-	if usage.Usage == nil || usage.Usage.Input != 12 || usage.Usage.Output != 4 {
-		t.Fatalf("usage event: %+v", usage.Usage)
-	}
-
 	// A prompt for a different session is not this session's turn.
 	peer.notify("session/update", coaTestUpdate("ses_other", map[string]any{
 		"sessionUpdate": "agent_message_chunk",
@@ -476,13 +466,9 @@ func TestACPAutoPermission(t *testing.T) {
 			map[string]any{"optionId": "r1", "kind": "reject_once"},
 		},
 	})
-	peer.notify("session/update", coaTestUpdate("ses_1", map[string]any{
-		"sessionUpdate": "usage_update",
-		"used":          7,
-		"size":          2,
-	}))
+	coaTestChunk(peer, "marker")
 	// The marker arrives first only when no permission event was emitted.
-	events.next(EventUsage)
+	events.next(EventAssistant)
 	if len(events.buf) != 0 {
 		t.Fatalf("unexpected events before the marker: %+v", events.buf)
 	}
@@ -1462,5 +1448,81 @@ func TestGrokSetModel(t *testing.T) {
 	err := s.SetModel(context.Background(), "grok-nope")
 	if err == nil || !strings.Contains(err.Error(), "unknown model id") {
 		t.Fatalf("bad model error: %v", err)
+	}
+}
+
+// TestACPTurnUsage checks the turn usage on the result for the shapes that
+// the agents send.
+func TestACPTurnUsage(t *testing.T) {
+	cases := []struct {
+		name    string
+		session []float64 // usage_update session costs, sent in the turn
+		resp    map[string]any
+		want    Usage
+	}{
+		{
+			name: "grok meta usage",
+			resp: map[string]any{"stopReason": "end_turn", "_meta": map[string]any{
+				"modelId": "grok-4.7",
+				"usage": map[string]any{
+					"inputTokens": 24168, "outputTokens": 412, "totalTokens": 24580,
+					"cachedReadTokens": 2176, "cacheCreationTokens": 0, "reasoningTokens": 347,
+					"costUsdTicks": 161649600,
+				},
+			}},
+			want: Usage{Input: 21992, Output: 412, CacheRead: 2176, Model: "grok-4.7", CostUSD: 0.0161649600},
+		},
+		{
+			name:    "spec usage and session cost",
+			session: []float64{0.5, 0.75},
+			resp: map[string]any{"stopReason": "end_turn", "usage": map[string]any{
+				"inputTokens": 10052, "outputTokens": 295, "totalTokens": 10347,
+			}},
+			want: Usage{Input: 10052, Output: 295, CostUSD: 0.25},
+		},
+		{
+			name: "spec usage with cache",
+			resp: map[string]any{"stopReason": "end_turn", "usage": map[string]any{
+				"inputTokens": 100, "outputTokens": 20, "totalTokens": 170, "cachedReadTokens": 50,
+			}},
+			want: Usage{Input: 100, Output: 20, CacheRead: 50},
+		},
+		{
+			name: "no usage",
+			resp: map[string]any{"stopReason": "end_turn"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			peer, s, proto := coaTestStartACP(t, acpGrok, StartRequest{}, coaTestACPAgent)
+			events := coaTestWatch(t, s.Events())
+			peer.drain()
+			// The session cost before the turn is not part of the turn.
+			peer.notify("session/update", coaTestUpdate("ses_1", map[string]any{
+				"sessionUpdate": "usage_update", "used": 1, "size": 2,
+				"cost": map[string]any{"amount": 0.5, "currency": "USD"},
+			}))
+			id := coaTestPromptID(t, coaTestMustEncode(t, proto, "go"), "session/prompt")
+			for _, c := range tc.session {
+				peer.notify("session/update", coaTestUpdate("ses_1", map[string]any{
+					"sessionUpdate": "usage_update", "used": 10052, "size": 1000000,
+					"cost": map[string]any{"amount": c, "currency": "USD"},
+				}))
+			}
+			peer.push(coaTestResponse(t, id, tc.resp))
+			res := events.next(EventResult)
+			if res.Result.Usage != tc.want {
+				t.Fatalf("usage = %+v, want %+v", res.Result.Usage, tc.want)
+			}
+		})
+	}
+}
+
+func TestACPCostUSD(t *testing.T) {
+	if _, ok := acpCostUSD(map[string]any{"amount": 2.0, "currency": "EUR"}); ok {
+		t.Fatal("a EUR cost counts as USD")
+	}
+	if c, ok := acpCostUSD(map[string]any{"amount": 2.0}); !ok || c != 2 {
+		t.Fatalf("cost without currency = %v %v", c, ok)
 	}
 }

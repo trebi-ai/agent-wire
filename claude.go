@@ -186,6 +186,8 @@ type claudeProtocol struct {
 	sawResult bool
 	// turnActive is true from a prompt write until its result.
 	turnActive bool
+	// costTotal is the last total_cost_usd. It counts all turns of the process.
+	costTotal float64
 	// replies maps a control request id this side sent to its waiter.
 	replies map[string]chan claudeReply
 	// initID is the id of the initialize request; its reply carries models.
@@ -668,7 +670,13 @@ func (p *claudeProtocol) parseResult(m map[string]any) []Event {
 		res.Usage = *u
 	}
 	if cost, ok := m["total_cost_usd"].(float64); ok {
+		p.mu.Lock()
 		res.Usage.CostUSD = cost
+		if cost >= p.costTotal {
+			res.Usage.CostUSD = cost - p.costTotal
+		}
+		p.costTotal = cost
+		p.mu.Unlock()
 	}
 	if isErr {
 		c := ClassifyResultFor(Claude, res)
