@@ -148,8 +148,8 @@ func TestACPUpdates(t *testing.T) {
 		"content":       map[string]any{"type": "text", "text": "pong"},
 	}))
 	text := events.next(EventAssistant)
-	if text.Text != "pong" || text.Delta {
-		t.Fatalf("assistant event: %+v", text)
+	if text.Text != "pong" || !text.Delta {
+		t.Fatalf("assistant delta: %+v", text)
 	}
 
 	peer.notify("session/update", coaTestUpdate("ses_1", map[string]any{
@@ -160,6 +160,9 @@ func TestACPUpdates(t *testing.T) {
 		"status":        "in_progress",
 		"rawInput":      map[string]any{"path": "/tmp/coa.txt"},
 	}))
+	if full := events.next(EventAssistant); full.Text != "pong" || full.Delta {
+		t.Fatalf("assistant block: %+v", full)
+	}
 	started := events.next(EventTool)
 	if started.Tool == nil {
 		t.Fatalf("tool_call event: %+v", started)
@@ -210,8 +213,99 @@ func TestACPUpdates(t *testing.T) {
 		"content":       map[string]any{"type": "text", "text": "mine"},
 	}))
 	mine := events.next(EventAssistant)
-	if mine.Text != "mine" {
+	if mine.Text != "mine" || !mine.Delta {
 		t.Fatalf("routed assistant event: %+v", mine)
+	}
+	// Only the chunk of this session enters the block.
+	peer.notify("session/update", coaTestUpdate("ses_1", map[string]any{"sessionUpdate": "plan"}))
+	if full := events.next(EventAssistant); full.Text != "mine" || full.Delta {
+		t.Fatalf("routed assistant block: %+v", full)
+	}
+}
+
+// coaTestChunk sends one agent_message_chunk for ses_1.
+func coaTestChunk(peer *coaTestPeer, text string) {
+	peer.notify("session/update", coaTestUpdate("ses_1", map[string]any{
+		"sessionUpdate": "agent_message_chunk",
+		"content":       map[string]any{"type": "text", "text": text},
+	}))
+}
+
+// coaTestCollect reads events until stop matches and returns them in order as
+// "type:text" lines, with a "~" mark on a delta. It skips status events.
+func coaTestCollect(t *testing.T, ch <-chan Event, stop EventType) []string {
+	t.Helper()
+	var out []string
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case ev, ok := <-ch:
+			if !ok {
+				t.Fatalf("stream closed: %v", out)
+			}
+			if ev.Type == EventStatus || ev.Type == EventInit {
+				continue
+			}
+			line := string(ev.Type) + ":" + ev.Text
+			if ev.Delta {
+				line = "~" + line
+			}
+			out = append(out, line)
+			if ev.Type == stop {
+				return out
+			}
+		case <-deadline:
+			t.Fatalf("timeout: %v", out)
+		}
+	}
+}
+
+// TestACPMessageBlocks streams chunks as deltas and sends each message block
+// as one complete event before the next update and before the turn result.
+func TestACPMessageBlocks(t *testing.T) {
+	peer, s, proto := coaTestStartACP(t, acpGrok, StartRequest{}, coaTestACPAgent)
+	peer.drain()
+	id := coaTestPromptID(t, coaTestMustEncode(t, proto, "go"), "session/prompt")
+	for _, c := range []string{"Run", " #396", " starts"} {
+		coaTestChunk(peer, c)
+	}
+	peer.notify("session/update", coaTestUpdate("ses_1", map[string]any{
+		"sessionUpdate": "tool_call", "toolCallId": "t1", "title": "Read", "kind": "read",
+	}))
+	coaTestChunk(peer, "Done")
+	coaTestChunk(peer, ".")
+	peer.push(coaTestResponse(t, id, map[string]any{"stopReason": "end_turn"}))
+
+	got := coaTestCollect(t, s.Events(), EventResult)
+	want := []string{
+		"~assistant:Run", "~assistant: #396", "~assistant: starts",
+		"assistant:Run #396 starts", "tool:",
+		"~assistant:Done", "~assistant:.",
+		"assistant:Done.", "result:",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("events:\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestACPMessageBlockOnExit keeps the text of a turn that ends with no
+// prompt response.
+func TestACPMessageBlockOnExit(t *testing.T) {
+	peer, s, proto := coaTestStartACP(t, acpGrok, StartRequest{}, coaTestACPAgent)
+	events := coaTestWatch(t, s.Events())
+	peer.drain()
+	coaTestPromptID(t, coaTestMustEncode(t, proto, "go"), "session/prompt")
+	coaTestChunk(peer, "half")
+	coaTestChunk(peer, " done")
+	events.next(EventAssistant)
+	events.next(EventAssistant)
+
+	evs := proto.Exit(1, nil, "grok died")
+	if len(evs) != 2 || evs[0].Type != EventAssistant || evs[0].Text != "half done" || evs[0].Delta {
+		t.Fatalf("exit events: %+v", evs)
+	}
+	if evs[1].Type != EventError {
+		t.Fatalf("exit error: %+v", evs[1])
 	}
 }
 

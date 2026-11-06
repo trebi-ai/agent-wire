@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.12.3] - 2026-11-06
+
+### Fixed
+
+- ACP drivers (Copilot, Cursor, Gemini, omp, grok) send each `agent_message_chunk` as an assistant delta (`Delta: true`). The complete message block comes as one assistant event before the next update, the permission request, the turn result, or the exit. Before, each chunk was a complete message, so an agent that sends one token per chunk gave one turn per token.
+
 ## [v0.12.0] - 2026-11-01
 
 ### Added

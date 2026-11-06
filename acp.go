@@ -409,8 +409,10 @@ type acpProtocol struct {
 	sessionID    string
 	firstPrompt  bool
 
-	promptID    string
-	sawResult   bool
+	promptID  string
+	sawResult bool
+	// text holds the chunks of the current assistant message block.
+	text        strings.Builder
 	approvals   map[string][]acpOption
 	authMethods []string
 	// steering reports the top-level _meta.steering.supported of initialize.
@@ -486,6 +488,8 @@ func (p *acpProtocol) Handshake(ctx context.Context, _ *wire.Writer) ([]Event, e
 	if events[0].Type == EventError {
 		return nil, errors.New(events[0].Error)
 	}
+	// A session load replays the history; its last message block ends here.
+	events = append(events, p.flushText()...)
 	if p.model != "" {
 		// The agent may take a model it did not list, so the call goes out
 		// even without an offered list.
@@ -1027,6 +1031,7 @@ func (p *acpProtocol) EncodePrompt(pr Prompt) ([]byte, error) {
 		return nil, ErrTurnActive
 	}
 	p.sawResult = false
+	p.text.Reset()
 	id := p.client.NextID()
 	p.promptID = string(id.Raw())
 	sessionID := p.sessionID
@@ -1184,15 +1189,39 @@ func (p *acpProtocol) Parse(line []byte) []Event {
 	return p.parseUpdate(params.Update)
 }
 
+// parseUpdate maps one session/update. Each message chunk is a delta; any
+// other update ends the message block, which then comes as one complete event.
 func (p *acpProtocol) parseUpdate(update map[string]any) []Event {
-	switch str(update["sessionUpdate"]) {
-	case "agent_message_chunk":
+	if str(update["sessionUpdate"]) == "agent_message_chunk" {
 		content, _ := update["content"].(map[string]any)
 		if content != nil && str(content["type"]) == "text" {
 			if text := str(content["text"]); text != "" {
-				return []Event{{Type: EventAssistant, Text: text}}
+				p.mu.Lock()
+				p.text.WriteString(text)
+				p.mu.Unlock()
+				return []Event{{Type: EventAssistant, Text: text, Delta: true}}
 			}
 		}
+		return nil
+	}
+	return append(p.flushText(), p.mapUpdate(update)...)
+}
+
+// flushText returns the buffered message block as one complete event and
+// empties the buffer.
+func (p *acpProtocol) flushText() []Event {
+	p.mu.Lock()
+	text := strings.TrimSpace(p.text.String())
+	p.text.Reset()
+	p.mu.Unlock()
+	if text == "" {
+		return nil
+	}
+	return []Event{{Type: EventAssistant, Text: text}}
+}
+
+func (p *acpProtocol) mapUpdate(update map[string]any) []Event {
+	switch str(update["sessionUpdate"]) {
 	case "agent_thought_chunk", "plan", "plan_update", "available_commands_update", "current_mode_update":
 		return []Event{{Type: EventStatus, Status: StatusRunning}}
 	case "config_option_update":
@@ -1278,10 +1307,11 @@ func (p *acpProtocol) parseResponse(msg jsonrpc.Message) []Event {
 	p.sawResult = true
 	p.promptID = ""
 	p.mu.Unlock()
+	out := p.flushText()
 	if msg.Err != nil {
 		text := msg.Err.Error()
 		c := ClassifyFor(p.kind.harness(), text, 0)
-		return []Event{{Type: EventError, Error: text, Code: c.Code, EndReason: string(c.Class)}}
+		return append(out, Event{Type: EventError, Error: text, Code: c.Code, EndReason: string(c.Class)})
 	}
 	var res struct {
 		StopReason string          `json:"stopReason"`
@@ -1294,7 +1324,6 @@ func (p *acpProtocol) parseResponse(msg jsonrpc.Message) []Event {
 		} `json:"_meta"`
 	}
 	_ = json.Unmarshal(msg.Result, &res)
-	var out []Event
 	usage := acpUsageRaw(res.Usage)
 	if usage == nil && len(res.Meta.Usage) > 0 {
 		// grok reports the turn usage under _meta.
@@ -1330,7 +1359,7 @@ func (p *acpProtocol) parseResponse(msg jsonrpc.Message) []Event {
 func (p *acpProtocol) handleAgentRequest(msg jsonrpc.Message) []Event {
 	switch msg.Method {
 	case "session/request_permission":
-		return p.permissionRequest(msg)
+		return append(p.flushText(), p.permissionRequest(msg)...)
 	case "fs/read_text_file":
 		return p.handleReadTextFile(msg)
 	case "fs/write_text_file":
@@ -1439,11 +1468,12 @@ func (p *acpProtocol) currentSession() string {
 
 // Exit classifies a process exit without a prompt response.
 func (p *acpProtocol) Exit(code int, err error, stderr string) []Event {
+	out := p.flushText()
 	p.mu.Lock()
 	saw := p.sawResult
 	p.mu.Unlock()
 	if saw {
-		return nil
+		return out
 	}
 	text := strings.TrimSpace(stderr)
 	if text == "" {
@@ -1454,7 +1484,7 @@ func (p *acpProtocol) Exit(code int, err error, stderr string) []Event {
 		}
 	}
 	c := ClassifyFor(p.kind.harness(), text, 0)
-	return []Event{{Type: EventError, Error: text, Code: c.Code, EndReason: string(c.Class)}}
+	return append(out, Event{Type: EventError, Error: text, Code: c.Code, EndReason: string(c.Class)})
 }
 
 // acpSessionID reads the sessionId out of a session-open response.
