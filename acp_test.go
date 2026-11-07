@@ -1530,3 +1530,28 @@ func TestACPCostUSD(t *testing.T) {
 		t.Fatalf("cost without currency = %v %v", c, ok)
 	}
 }
+
+// TestACPThoughtBlocks streams thought chunks as thought deltas. A message
+// chunk after them ends the thought block, which comes as one complete event.
+func TestACPThoughtBlocks(t *testing.T) {
+	peer, s, proto := coaTestStartACP(t, acpGrok, StartRequest{}, coaTestACPAgent)
+	peer.drain()
+	id := coaTestPromptID(t, coaTestMustEncode(t, proto, "go"), "session/prompt")
+	for _, c := range []string{"Check", " the cursor"} {
+		peer.notify("session/update", coaTestUpdate("ses_1", map[string]any{
+			"sessionUpdate": "agent_thought_chunk",
+			"content":       map[string]any{"type": "text", "text": c},
+		}))
+	}
+	coaTestChunk(peer, "Done")
+	peer.push(coaTestResponse(t, id, map[string]any{"stopReason": "end_turn"}))
+
+	got := coaTestCollect(t, s.Events(), EventResult)
+	want := []string{
+		"~thought:Check", "~thought: the cursor", "thought:Check the cursor",
+		"~assistant:Done", "assistant:Done", "result:",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("events:\n got %q\nwant %q", got, want)
+	}
+}

@@ -1026,3 +1026,20 @@ func TestClaudeTurnCost(t *testing.T) {
 		t.Fatalf("turn costs = %v, want %v", got, want)
 	}
 }
+
+// TestClaudeThinking maps a thinking block to a thought, a thinking delta to a
+// thought delta, and skips a redacted block.
+func TestClaudeThinking(t *testing.T) {
+	proto := cpTestClaudeProto(t, PermissionPolicy{})
+	evs := proto.Parse([]byte(`{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"Plan the reply.","signature":"x"},{"type":"thinking","thinking":"","signature":"y"},{"type":"text","text":"Hi"}]}}`))
+	if cpTestCountEvents(evs, EventThought) != 1 {
+		t.Fatalf("thought events = %+v", evs)
+	}
+	if th := cpTestFirstEvent(evs, EventThought); th.Text != "Plan the reply." || th.Delta {
+		t.Fatalf("thought = %+v", th)
+	}
+	delta := proto.Parse([]byte(`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Plan"}}}`))
+	if len(delta) != 1 || delta[0].Type != EventThought || delta[0].Text != "Plan" || !delta[0].Delta {
+		t.Fatalf("thinking delta = %+v", delta)
+	}
+}

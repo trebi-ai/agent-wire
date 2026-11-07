@@ -421,6 +421,10 @@ func (p *piProtocol) parseUpdate(m map[string]any) []Event {
 		if text != "" {
 			return []Event{{Type: EventAssistant, Text: text, Delta: str(ev["type"]) == "text_delta"}}
 		}
+	case "thinking_delta":
+		if text := str(ev["delta"]); text != "" {
+			return []Event{{Type: EventThought, Text: text, Delta: true}}
+		}
 	case "tool_use", "tool_call":
 		name := str(ev["name"])
 		return []Event{{Type: EventTool, Tool: &ToolEvent{
@@ -493,6 +497,10 @@ func (p *piProtocol) parseMessage(kind string, m map[string]any) []Event {
 		case "text":
 			if text := str(block["text"]); text != "" {
 				out = append(out, Event{Type: EventAssistant, Text: text})
+			}
+		case "thinking":
+			if text := str(block["thinking"]); text != "" {
+				out = append(out, Event{Type: EventThought, Text: text})
 			}
 		case "toolCall":
 			name := str(block["name"])

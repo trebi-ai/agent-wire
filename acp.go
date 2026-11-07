@@ -411,8 +411,10 @@ type acpProtocol struct {
 
 	promptID  string
 	sawResult bool
-	// text holds the chunks of the current assistant message block.
+	// text holds the chunks of the current message or thought block, and
+	// textType says which of the two it is.
 	text      strings.Builder
+	textType  EventType
 	approvals map[string][]acpOption
 	// sessionCost is the last USD session cost of usage_update; costBase is
 	// its value when the current turn started.
@@ -1036,6 +1038,7 @@ func (p *acpProtocol) EncodePrompt(pr Prompt) ([]byte, error) {
 	}
 	p.sawResult = false
 	p.text.Reset()
+	p.textType = ""
 	p.costBase = p.sessionCost
 	id := p.client.NextID()
 	p.promptID = string(id.Raw())
@@ -1194,40 +1197,59 @@ func (p *acpProtocol) Parse(line []byte) []Event {
 	return p.parseUpdate(params.Update)
 }
 
-// parseUpdate maps one session/update. Each message chunk is a delta; any
-// other update ends the message block, which then comes as one complete event.
+// parseUpdate maps one session/update. Each message or thought chunk is a
+// delta; any other update, or a chunk of the other kind, ends the block, which
+// then comes as one complete event.
 func (p *acpProtocol) parseUpdate(update map[string]any) []Event {
-	if str(update["sessionUpdate"]) == "agent_message_chunk" {
-		content, _ := update["content"].(map[string]any)
-		if content != nil && str(content["type"]) == "text" {
-			if text := str(content["text"]); text != "" {
-				p.mu.Lock()
-				p.text.WriteString(text)
-				p.mu.Unlock()
-				return []Event{{Type: EventAssistant, Text: text, Delta: true}}
-			}
-		}
+	var typ EventType
+	switch str(update["sessionUpdate"]) {
+	case "agent_message_chunk":
+		typ = EventAssistant
+	case "agent_thought_chunk":
+		typ = EventThought
+	default:
+		return append(p.flushText(), p.mapUpdate(update)...)
+	}
+	content, _ := update["content"].(map[string]any)
+	if content == nil || str(content["type"]) != "text" {
 		return nil
 	}
-	return append(p.flushText(), p.mapUpdate(update)...)
+	text := str(content["text"])
+	if text == "" {
+		return nil
+	}
+	p.mu.Lock()
+	other := p.textType != "" && p.textType != typ
+	p.mu.Unlock()
+	var out []Event
+	if other {
+		out = p.flushText()
+	}
+	p.mu.Lock()
+	p.textType = typ
+	p.text.WriteString(text)
+	p.mu.Unlock()
+	return append(out, Event{Type: typ, Text: text, Delta: true})
 }
 
-// flushText returns the buffered message block as one complete event and
-// empties the buffer.
+// flushText returns the buffered block as one complete event and empties the
+// buffer.
 func (p *acpProtocol) flushText() []Event {
 	p.mu.Lock()
 	text := strings.TrimSpace(p.text.String())
+	typ := p.textType
 	p.text.Reset()
+	p.textType = ""
 	p.mu.Unlock()
 	if text == "" {
 		return nil
 	}
-	return []Event{{Type: EventAssistant, Text: text}}
+	return []Event{{Type: typ, Text: text}}
 }
 
 func (p *acpProtocol) mapUpdate(update map[string]any) []Event {
 	switch str(update["sessionUpdate"]) {
-	case "agent_thought_chunk", "plan", "plan_update", "available_commands_update", "current_mode_update":
+	case "plan", "plan_update", "available_commands_update", "current_mode_update":
 		return []Event{{Type: EventStatus, Status: StatusRunning}}
 	case "config_option_update":
 		if raw, err := json.Marshal(update); err == nil {

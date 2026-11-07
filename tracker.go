@@ -86,7 +86,7 @@ func (t *Tracker) Observe(e Event) Snapshot {
 	t.lastEventAt = e.At
 	t.lastEventKind = e.Type
 	switch e.Type {
-	case EventAssistant, EventUser, EventUsage, EventStatus:
+	case EventAssistant, EventThought, EventUser, EventUsage, EventStatus:
 		// Progress: clears a stall window.
 		t.stallSince = time.Time{}
 	case EventInit:

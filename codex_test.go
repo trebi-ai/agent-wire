@@ -777,3 +777,24 @@ func TestWindowKey(t *testing.T) {
 		}
 	}
 }
+
+// TestCodexReasoning maps a completed reasoning item to one thought, from its
+// summary, else from its content.
+func TestCodexReasoning(t *testing.T) {
+	peer, s, _ := coaTestStartCodex(t, StartRequest{}, coaTestCodexHandshake)
+	events := coaTestWatch(t, s.Events())
+
+	peer.notify("item/started", map[string]any{"item": map[string]any{"id": "r1", "type": "reasoning"}})
+	peer.notify("item/completed", map[string]any{"item": map[string]any{
+		"id": "r1", "type": "reasoning", "summary": []any{"**Plan**", "Read the file."}, "content": []any{"raw"},
+	}})
+	if ev := events.next(EventThought); ev.Text != "**Plan**\n\nRead the file." || ev.Delta {
+		t.Fatalf("summary thought: %+v", ev)
+	}
+	peer.notify("item/completed", map[string]any{"item": map[string]any{
+		"id": "r2", "type": "reasoning", "summary": []any{}, "content": []any{"raw text"},
+	}})
+	if ev := events.next(EventThought); ev.Text != "raw text" {
+		t.Fatalf("content thought: %+v", ev)
+	}
+}

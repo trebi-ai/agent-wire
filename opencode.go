@@ -81,7 +81,63 @@ type openCodeBase struct {
 	lastError string
 	onClose   []func()
 
+	usage turnUsage
+
 	out wire.Outbox
+}
+
+// turnUsage keeps the newest usage of each assistant message of the running
+// turn. OpenCode repeats the totals of a message, so a new report replaces the
+// old one.
+type turnUsage struct {
+	mu    sync.Mutex
+	msgs  map[string]Usage
+	model string
+}
+
+func (t *turnUsage) set(messageID string, u Usage) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.msgs == nil {
+		t.msgs = map[string]Usage{}
+	}
+	if messageID == "" {
+		messageID = fmt.Sprintf("#%d", len(t.msgs))
+	}
+	t.msgs[messageID] = u
+	if u.Model != "" {
+		t.model = u.Model
+	}
+}
+
+// take returns the sum of the turn, or nil when the turn reported no usage,
+// and starts the next turn.
+func (t *turnUsage) take() *Usage {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.msgs) == 0 {
+		return nil
+	}
+	sum := Usage{Model: t.model}
+	for _, u := range t.msgs {
+		sum.Input += u.Input
+		sum.Output += u.Output
+		sum.CacheRead += u.CacheRead
+		sum.CacheCreation += u.CacheCreation
+		sum.CostUSD += u.CostUSD
+	}
+	t.msgs, t.model = nil, ""
+	return &sum
+}
+
+// turnResult returns the usage event of the turn and res with the same usage.
+func (b *openCodeBase) turnResult(res *Result) []Event {
+	u := b.usage.take()
+	if u == nil {
+		return []Event{{Type: EventResult, Result: res}}
+	}
+	res.Usage = *u
+	return []Event{{Type: EventUsage, Usage: u}, {Type: EventResult, Result: res}}
 }
 
 func newOpenCodeBase(rt *Runtime, srv *openCodeServer, id, dir string, w openCodeWire) *openCodeBase {
@@ -438,7 +494,7 @@ func (d openCodeDriver) start(ctx context.Context, req StartRequest, resume bool
 		openCodeBase: newOpenCodeBase(d.rt, srv, sessionID, dir, openCodeV1{}),
 		instructions: l.instructions, model: req.Model, variant: req.Effort,
 		policy: req.Permissions.Normalized(), first: true,
-		parts: map[string]int{}, roles: map[string]string{},
+		parts: map[string]int{}, done: map[string]bool{}, roles: map[string]string{},
 		partOwner: map[string]string{},
 	}
 	s.interrupt = s.Interrupt
@@ -459,9 +515,20 @@ type openCodeSession struct {
 	policy       PermissionPolicy
 	first        bool
 
+	// parts counts the bytes of each text or reasoning part that the caller
+	// has received. open lists the parts that have not sent their full block.
 	parts     map[string]int
+	open      []openCodeBlock
+	done      map[string]bool
 	roles     map[string]string
 	partOwner map[string]string
+}
+
+// openCodeBlock is a text or reasoning part that still streams.
+type openCodeBlock struct {
+	id   string
+	typ  EventType
+	text string
 }
 
 // Send prompts, or holds p until the running turn ends.
@@ -574,14 +641,15 @@ func (s *openCodeSession) parse(typ string, props map[string]any) []Event {
 		lastErr := s.lastError
 		s.queueMu.Unlock()
 		s.afterTurn(s.Prompt)
+		out := s.flushBlocks()
 		if lastErr != "" {
 			c := ClassifyFor(OpenCode, lastErr, 0)
-			return []Event{{Type: EventResult, Result: &Result{
+			return append(out, s.turnResult(&Result{
 				Subtype: "error_during_execution", IsError: true, Text: lastErr,
 				EndReason: string(c.Class), Code: c.Code,
-			}}}
+			})...)
 		}
-		return []Event{{Type: EventResult, Result: &Result{Subtype: "success", SessionID: s.id}}}
+		return append(out, s.turnResult(&Result{Subtype: "success", SessionID: s.id})...)
 	case "session.error":
 		text := openCodeErrorText(props)
 		if text == "" {
@@ -644,9 +712,9 @@ func (s *openCodeSession) parseMessageUpdated(props map[string]any) []Event {
 		s.queueMu.Unlock()
 		return []Event{{Type: EventError, Error: errText}}
 	}
-	if num(info["cost"]) > 0 {
+	if str(info["role"]) == "assistant" {
 		if u := openCodeUsage(info); u != nil {
-			return []Event{{Type: EventUsage, Usage: u}}
+			s.usage.set(str(info["id"]), *u)
 		}
 	}
 	return nil
@@ -673,34 +741,81 @@ func (s *openCodeSession) parsePart(part map[string]any) []Event {
 	}
 	switch str(part["type"]) {
 	case "text":
-		return s.parseTextPart(part, partID)
-	case "tool":
-		return s.parseToolPart(part, partID)
+		return s.parseBlockPart(EventAssistant, part, partID)
 	case "reasoning":
-		return []Event{{Type: EventStatus, Status: StatusRunning}}
+		return s.parseBlockPart(EventThought, part, partID)
+	case "tool":
+		return append(s.flushBlocks(), s.parseToolPart(part, partID)...)
 	}
 	return nil
 }
 
-func (s *openCodeSession) parseTextPart(part map[string]any, id string) []Event {
+// parseBlockPart streams a text or reasoning part as deltas. Each update
+// carries the whole text so far. The full block goes out once, when the part
+// ends, or when a tool call or the end of the turn flushes it.
+func (s *openCodeSession) parseBlockPart(typ EventType, part map[string]any, id string) []Event {
 	text := str(part["text"])
 	if text == "" {
 		return nil
 	}
+	end, _ := part["time"].(map[string]any)
+	ended := num(end["end"]) > 0
 	s.queueMu.Lock()
+	defer s.queueMu.Unlock()
+	if s.done[id] {
+		return nil
+	}
 	prev := s.parts[id]
-	if len(text) > prev {
-		s.parts[id] = len(text)
-	}
-	s.queueMu.Unlock()
+	s.parts[id] = len(text)
 	if prev > len(text) {
-		// A replaced block: emit the whole text once.
-		return []Event{{Type: EventAssistant, Text: text}}
+		// A replaced block: send the whole text once.
+		s.closeBlock(id)
+		return []Event{{Type: typ, Text: text}}
 	}
-	if prev == 0 {
-		return []Event{{Type: EventAssistant, Text: text}}
+	var out []Event
+	if len(text) > prev {
+		out = append(out, Event{Type: typ, Text: text[prev:], Delta: true})
 	}
-	return []Event{{Type: EventAssistant, Text: text[prev:], Delta: true}}
+	if ended {
+		s.closeBlock(id)
+		return append(out, Event{Type: typ, Text: text})
+	}
+	if i := s.openIndex(id); i >= 0 {
+		s.open[i].text = text
+	} else {
+		s.open = append(s.open, openCodeBlock{id: id, typ: typ, text: text})
+	}
+	return out
+}
+
+// flushBlocks sends the full text of each open block, oldest first.
+func (s *openCodeSession) flushBlocks() []Event {
+	s.queueMu.Lock()
+	defer s.queueMu.Unlock()
+	var out []Event
+	for _, b := range s.open {
+		s.done[b.id] = true
+		out = append(out, Event{Type: b.typ, Text: b.text})
+	}
+	s.open = nil
+	return out
+}
+
+// closeBlock marks a block as sent in full. The caller holds queueMu.
+func (s *openCodeSession) closeBlock(id string) {
+	s.done[id] = true
+	if i := s.openIndex(id); i >= 0 {
+		s.open = append(s.open[:i], s.open[i+1:]...)
+	}
+}
+
+func (s *openCodeSession) openIndex(id string) int {
+	for i, b := range s.open {
+		if b.id == id {
+			return i
+		}
+	}
+	return -1
 }
 
 func (s *openCodeSession) parseToolPart(part map[string]any, id string) []Event {
@@ -774,12 +889,14 @@ func openCodeUsage(info map[string]any) *Usage {
 	if tokens == nil {
 		return nil
 	}
+	cache, _ := tokens["cache"].(map[string]any)
 	u := &Usage{
-		Input:     int64(num(tokens["input"])),
-		Output:    int64(num(tokens["output"])),
-		CacheRead: int64(num(tokens["cache"]) + num(tokens["cache_read"])),
-		CostUSD:   num(info["cost"]),
-		Model:     str(info["modelID"]),
+		Input:         int64(num(tokens["input"])),
+		Output:        int64(num(tokens["output"]) + num(tokens["reasoning"])),
+		CacheRead:     int64(num(cache["read"]) + num(tokens["cache"]) + num(tokens["cache_read"])),
+		CacheCreation: int64(num(cache["write"])),
+		CostUSD:       num(info["cost"]),
+		Model:         str(info["modelID"]),
 	}
 	if u.Input == 0 && u.Output == 0 && u.CacheRead == 0 && u.CostUSD == 0 {
 		return nil

@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.12.4] - 2026-11-07
+
+### Fixed
+
+- OpenCode 2.x: the turn `Result.Usage` carries the token usage of the turn: the sum of the `session.step.ended` steps. One usage event with the same value comes before the result. Before, the result had no usage, and the driver sent one usage event per step and one more for each `session.usage.updated`, which is the running total of the session.
+- OpenCode 1.x: the turn `Result.Usage` carries the sum of the newest totals of each assistant message of the turn, also for a model that costs nothing. `tokens.cache.read` and `tokens.cache.write` map to `CacheRead` and `CacheCreation`. Before, the driver sent usage only when the cost was above zero, read no cache tokens, and the result had no usage.
+- OpenCode 1.x and 2.x: `Usage.Output` includes the reasoning tokens.
+- OpenCode 2.x: a text block streams as deltas, and `session.text.ended` then sends the full block once. Before, a block that streamed as deltas never came as one complete event.
+- OpenCode 1.x: a text part streams as deltas. The full block goes out once, when the part ends, before a tool call, or at the end of the turn. Before, the first update of a part was a complete event and the rest were deltas.
+
+### Added
+
+- `EventThought` from more drivers. Each streams thought deltas, then one complete thought per block. OpenCode 2.x: `session.reasoning.delta` and `session.reasoning.ended`. OpenCode 1.x: `reasoning` parts. ACP: `agent_thought_chunk`. Claude: `thinking` blocks and `thinking_delta`; a redacted block sends nothing. Codex: a completed `reasoning` item, from its summary, else its content, with no deltas. pi: `thinking` blocks and `thinking_delta`.
+- `Tracker` counts a thought as progress.
+- `FakeDriver`: a `thought` line sends an `EventThought`. With `"delta":true`, it is a delta.
+
 ## [v0.12.3] - 2026-11-06
 
 ### Fixed

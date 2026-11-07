@@ -547,6 +547,11 @@ func (p *claudeProtocol) parseAssistant(m map[string]any) []Event {
 			if text := str(block["text"]); text != "" {
 				out = append(out, Event{Type: EventAssistant, Text: text})
 			}
+		case "thinking":
+			// A redacted block has a signature and no text.
+			if text := str(block["thinking"]); text != "" {
+				out = append(out, Event{Type: EventThought, Text: text})
+			}
 		case "tool_use":
 			out = append(out, p.toolStarted(block)...)
 		}
@@ -625,9 +630,14 @@ func (p *claudeProtocol) parseStreamEvent(m map[string]any) []Event {
 		if delta == nil {
 			return nil
 		}
-		if str(delta["type"]) == "text_delta" {
+		switch str(delta["type"]) {
+		case "text_delta":
 			if text := str(delta["text"]); text != "" {
 				return []Event{{Type: EventAssistant, Text: text, Delta: true}}
+			}
+		case "thinking_delta":
+			if text := str(delta["thinking"]); text != "" {
+				return []Event{{Type: EventThought, Text: text, Delta: true}}
 			}
 		}
 	case "content_block_start":

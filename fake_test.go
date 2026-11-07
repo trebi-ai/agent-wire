@@ -13,6 +13,7 @@ echo '{"type":"assistant","text":"hello"}'
 echo '{"type":"tool","id":"t1","name":"Bash","status":"started"}'
 echo '{"type":"tool","id":"t1","name":"Bash","status":"completed"}'
 echo '{"type":"permission","id":"p1","tool":"Bash","question":"run it?"}'
+echo '{"type":"thought","text":"hm"}'
 echo '{"type":"result","subtype":"success","text":"done"}'`
 
 // rtTestCollectEvents drains a session until its event channel closes.
@@ -53,7 +54,7 @@ func TestFakeDriverScriptEventOrder(t *testing.T) {
 	t.Cleanup(func() { rtTestCloseSession(t, sess) })
 
 	events := rtTestCollectEvents(t, sess)
-	want := []EventType{EventInit, EventAssistant, EventTool, EventTool, EventPermission, EventResult, EventExit}
+	want := []EventType{EventInit, EventAssistant, EventTool, EventTool, EventPermission, EventThought, EventResult, EventExit}
 	if got := rtTestEventTypes(events); !slices.Equal(got, want) {
 		t.Fatalf("event types = %v, want %v", got, want)
 	}
@@ -72,8 +73,11 @@ func TestFakeDriverScriptEventOrder(t *testing.T) {
 	if perm := events[4].Permission; perm == nil || perm.ID != "p1" || perm.Tool != "Bash" {
 		t.Fatalf("permission event = %+v", events[4].Permission)
 	}
-	if res := events[5].Result; res == nil || res.Subtype != "success" || res.IsError {
-		t.Fatalf("result event = %+v", events[5].Result)
+	if th := events[5]; th.Text != "hm" || th.Delta {
+		t.Fatalf("thought event = %+v", th)
+	}
+	if res := events[6].Result; res == nil || res.Subtype != "success" || res.IsError {
+		t.Fatalf("result event = %+v", events[6].Result)
 	}
 	last := events[len(events)-1]
 	if last.Type != EventExit || last.ExitCode == nil || *last.ExitCode != 0 {

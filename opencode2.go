@@ -161,6 +161,7 @@ func (d openCode2Driver) open(ctx context.Context, req StartRequest, l *launch) 
 		variant:      req.Effort,
 		policy:       req.Permissions.Normalized(),
 		text:         map[string]int{},
+		ended:        map[string]bool{},
 		tools:        map[string]string{},
 	}
 	s.interrupt = s.Interrupt
@@ -195,7 +196,9 @@ type openCode2Session struct {
 
 	// text records how much of each (assistant message, block) pair the caller
 	// has already received, so the ended event can be reconciled against it.
-	text map[string]int
+	// ended marks the blocks whose full text went out.
+	text  map[string]int
+	ended map[string]bool
 	// tools remembers the name of each tool call. V2 sends the name once, when
 	// the call starts.
 	tools map[string]string
@@ -384,14 +387,13 @@ func (s *openCode2Session) parse(typ string, data map[string]any) []Event {
 	case "session.execution.started", "session.step.started":
 		return []Event{{Type: EventStatus, Status: StatusRunning}}
 	case "session.text.delta":
-		delta := str(data["delta"])
-		if delta == "" {
-			return nil
-		}
-		s.noteText(data, len(delta))
-		return []Event{{Type: EventAssistant, Text: delta, Delta: true}}
+		return s.parseDelta(EventAssistant, data)
 	case "session.text.ended":
-		return s.parseTextEnded(data)
+		return s.parseEnded(EventAssistant, data)
+	case "session.reasoning.delta":
+		return s.parseDelta(EventThought, data)
+	case "session.reasoning.ended":
+		return s.parseEnded(EventThought, data)
 	case "session.tool.input.started":
 		id, name := str(data["id"]), str(data["name"])
 		if id == "" {
@@ -430,10 +432,10 @@ func (s *openCode2Session) parse(typ string, data map[string]any) []Event {
 		name := s.toolName(id)
 		text, _, _ := openCode2Error(data)
 		return []Event{{Type: EventTool, Tool: s.toolEvent(id, name, "", firstNonEmpty(text, openCode2ToolOutput(data)), "failed")}}
-	case "session.step.ended", "session.usage.updated":
-		if u := openCode2Usage(data); u != nil {
-			return []Event{{Type: EventUsage, Usage: u}}
-		}
+	case "session.step.ended":
+		// session.usage.updated is the running total of the session; the
+		// steps of the turn give the turn total.
+		s.noteUsage(data)
 	case "session.execution.succeeded":
 		s.queueMu.Lock()
 		s.sawResult = true
@@ -443,13 +445,14 @@ func (s *openCode2Session) parse(typ string, data map[string]any) []Event {
 		s.afterTurn(s.Prompt)
 		if lastErr != "" {
 			c := ClassifyFor(OpenCode2, lastErr, 0)
-			return []Event{{Type: EventResult, Result: &Result{
+			return s.turnResult(&Result{
 				Subtype: "error_during_execution", IsError: true, Text: lastErr,
 				EndReason: string(c.Class), Code: c.Code,
-			}}}
+			})
 		}
-		return []Event{{Type: EventResult, Result: &Result{Subtype: "success", SessionID: s.id}}}
+		return s.turnResult(&Result{Subtype: "success", SessionID: s.id})
 	case "session.step.failed", "session.execution.failed":
+		s.noteUsage(data)
 		text, status, vendor := openCode2Error(data)
 		if text == "" {
 			text = "opencode2 session error"
@@ -464,13 +467,11 @@ func (s *openCode2Session) parse(typ string, data map[string]any) []Event {
 		s.queueMu.Unlock()
 		if typ == "session.execution.failed" {
 			s.afterTurn(s.Prompt)
-			return []Event{
-				{Type: EventError, Error: text, Code: c.Code, EndReason: string(c.Class)},
-				{Type: EventResult, Result: &Result{
+			return append([]Event{{Type: EventError, Error: text, Code: c.Code, EndReason: string(c.Class)}},
+				s.turnResult(&Result{
 					Subtype: "error_during_execution", IsError: true, Text: text,
 					EndReason: string(c.Class), Code: c.Code,
-				}},
-			}
+				})...)
 		}
 		return []Event{{Type: EventError, Error: text, Code: c.Code, EndReason: string(c.Class)}}
 	case "permission.asked":
@@ -502,36 +503,48 @@ func (s *openCode2Session) parsePermission(data map[string]any) []Event {
 	}}}
 }
 
-// parseTextEnded reconciles the full text of a finished block against what the
-// caller already received as deltas. V2 appends text at the end of a block that
-// never streamed, for example a shell exit code. The block is recorded as fully
-// delivered, so a repeated ended event sends nothing twice.
-func (s *openCode2Session) parseTextEnded(data map[string]any) []Event {
+// parseDelta streams one text or reasoning delta.
+func (s *openCode2Session) parseDelta(typ EventType, data map[string]any) []Event {
+	delta := str(data["delta"])
+	if delta == "" {
+		return nil
+	}
+	key := openCode2BlockKey(typ, data)
+	s.queueMu.Lock()
+	s.text[key] += len(delta)
+	s.queueMu.Unlock()
+	return []Event{{Type: typ, Text: delta, Delta: true}}
+}
+
+// parseEnded sends the full text of a finished block once. V2 can append text
+// at the end of a block that never streamed, for example a shell exit code, so
+// the part the deltas did not carry goes out first as one more delta.
+func (s *openCode2Session) parseEnded(typ EventType, data map[string]any) []Event {
 	text := str(data["text"])
 	if text == "" {
 		return nil
 	}
-	key := openCode2TextKey(data)
+	key := openCode2BlockKey(typ, data)
 	s.queueMu.Lock()
-	seen := s.text[key]
+	seen, ended := s.text[key], s.ended[key]
 	s.text[key] = len(text)
+	s.ended[key] = true
 	s.queueMu.Unlock()
-	switch {
-	case seen == len(text):
+	if ended {
 		return nil
-	case seen == 0 || seen > len(text):
-		return []Event{{Type: EventAssistant, Text: text}}
-	default:
-		return []Event{{Type: EventAssistant, Text: text[seen:], Delta: true}}
 	}
+	var out []Event
+	if seen > 0 && seen < len(text) {
+		out = append(out, Event{Type: typ, Text: text[seen:], Delta: true})
+	}
+	return append(out, Event{Type: typ, Text: text})
 }
 
-// noteText records streamed text against the block it belongs to.
-func (s *openCode2Session) noteText(data map[string]any, n int) {
-	key := openCode2TextKey(data)
-	s.queueMu.Lock()
-	s.text[key] += n
-	s.queueMu.Unlock()
+// noteUsage keeps the tokens of one step. Each step is one assistant message.
+func (s *openCode2Session) noteUsage(data map[string]any) {
+	if u := openCode2Usage(data); u != nil {
+		s.usage.set(str(data["assistantMessageID"]), *u)
+	}
 }
 
 // toolName is the name of an in-flight tool call.
@@ -550,9 +563,10 @@ func (s *openCode2Session) toolEvent(id, name, input, output, status string) *To
 	}
 }
 
-// openCode2TextKey identifies one text block of one assistant message.
-func openCode2TextKey(data map[string]any) string {
-	return str(data["assistantMessageID"]) + "/" + str(data["ordinal"])
+// openCode2BlockKey identifies one text or reasoning block of one assistant
+// message.
+func openCode2BlockKey(typ EventType, data map[string]any) string {
+	return string(typ) + "/" + str(data["assistantMessageID"]) + "/" + str(data["ordinal"])
 }
 
 // openCode2Error reads the message, HTTP status and vendor type out of a V2
@@ -657,10 +671,11 @@ func openCode2Usage(data map[string]any) *Usage {
 	}
 	cache, _ := tokens["cache"].(map[string]any)
 	u := &Usage{
-		Input:     int64(num(tokens["input"])),
-		Output:    int64(num(tokens["output"])),
-		CacheRead: int64(num(cache["read"]) + num(tokens["cache_read"])),
-		CostUSD:   num(data["cost"]),
+		Input:         int64(num(tokens["input"])),
+		Output:        int64(num(tokens["output"]) + num(tokens["reasoning"])),
+		CacheRead:     int64(num(cache["read"]) + num(tokens["cache_read"])),
+		CacheCreation: int64(num(cache["write"])),
+		CostUSD:       num(data["cost"]),
 	}
 	if model, _ := data["model"].(map[string]any); model != nil {
 		u.Model = str(model["id"])

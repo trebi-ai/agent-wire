@@ -175,7 +175,7 @@ func (oc *coaTestOpenCode) session(id, directory, instructions, model, variant s
 		openCodeBase: newOpenCodeBase(oc.route.rt, oc.route, id, directory, openCodeV1{}),
 		instructions: instructions, model: model, variant: variant,
 		policy: policy.Normalized(), first: true,
-		parts: map[string]int{}, roles: map[string]string{}, partOwner: map[string]string{},
+		parts: map[string]int{}, done: map[string]bool{}, roles: map[string]string{}, partOwner: map[string]string{},
 	}
 	oc.route.subscribe(s)
 	oc.route.ensureStream(directory)
@@ -243,7 +243,7 @@ func TestOpenCodeSessionEvents(t *testing.T) {
 	oc.sse.push(t, typ, props)
 
 	first := events.next(EventAssistant)
-	if first.Text != "pong" || first.Delta {
+	if first.Text != "pong" || !first.Delta {
 		t.Fatalf("first assistant event: %+v", first)
 	}
 	for _, ev := range events.buf {
@@ -252,25 +252,21 @@ func TestOpenCodeSessionEvents(t *testing.T) {
 		}
 	}
 
-	// One part streamed three times becomes a block and then two deltas.
+	// One part streamed three times becomes three deltas.
 	typ, props = coaTestTextPart("s1", "m2", "p3", "po")
 	oc.sse.push(t, typ, props)
 	typ, props = coaTestTextPart("s1", "m2", "p3", "pon")
 	oc.sse.push(t, typ, props)
 	typ, props = coaTestTextPart("s1", "m2", "p3", "pong")
 	oc.sse.push(t, typ, props)
-
-	block := events.next(EventAssistant)
-	if block.Text != "po" || block.Delta {
-		t.Fatalf("block event: %+v", block)
-	}
-	for _, want := range []string{"n", "g"} {
+	for _, want := range []string{"po", "n", "g"} {
 		delta := events.next(EventAssistant)
 		if delta.Text != want || !delta.Delta {
 			t.Fatalf("delta event: %+v", delta)
 		}
 	}
 
+	// A tool call ends the open blocks: each goes out once in full.
 	oc.sse.push(t, "message.part.updated", map[string]any{"part": map[string]any{
 		"id": "p4", "messageID": "m2", "sessionID": "s1", "type": "tool", "tool": "bash",
 		"state": map[string]any{
@@ -279,6 +275,11 @@ func TestOpenCodeSessionEvents(t *testing.T) {
 			"output": "total 0",
 		},
 	}})
+	for _, want := range []string{"pong", "pong"} {
+		if ev := events.next(EventAssistant); ev.Text != want || ev.Delta {
+			t.Fatalf("flushed block: %+v", ev)
+		}
+	}
 	tool := events.next(EventTool)
 	if tool.Tool == nil || tool.Tool.Name != "bash" || tool.Tool.Kind != ToolExec {
 		t.Fatalf("tool event: %+v", tool.Tool)
@@ -443,6 +444,76 @@ func TestOpenCodeStreamIsDirectoryScoped(t *testing.T) {
 	for _, d := range dirs {
 		if d == "" {
 			t.Fatal("an /event stream was opened without a directory")
+		}
+	}
+}
+
+// TestOpenCodeTurnUsage checks that the turn reports the newest totals of each
+// assistant message, also for a free model, with the nested cache counters and
+// the reasoning tokens as output.
+func TestOpenCodeTurnUsage(t *testing.T) {
+	oc := coaTestNewOpenCode(t, coaTestRuntime())
+	sess := oc.session("s1", "", "", "", "", PermissionPolicy{})
+	events := coaTestWatch(t, sess.Events())
+	oc.sse.wait(t)
+
+	msg := func(id string, input, output, reasoning, cache float64) {
+		oc.sse.push(t, "message.updated", map[string]any{"info": map[string]any{
+			"id": id, "role": "assistant", "sessionID": "s1", "modelID": "free-model", "cost": 0,
+			"tokens": map[string]any{
+				"input": input, "output": output, "reasoning": reasoning,
+				"cache": map[string]any{"read": cache, "write": 0},
+			},
+		}})
+	}
+	msg("m1", 10, 1, 0, 0)
+	msg("m1", 100, 20, 5, 1000) // the same message again, with its final totals
+	msg("m2", 50, 10, 0, 2000)
+	oc.sse.push(t, "session.idle", map[string]any{"sessionID": "s1"})
+
+	want := Usage{Input: 150, Output: 35, CacheRead: 3000, Model: "free-model"}
+	if ev := events.next(EventUsage); ev.Usage == nil || *ev.Usage != want {
+		t.Fatalf("turn usage: %+v, want %+v", ev.Usage, want)
+	}
+	if ev := events.next(EventResult); ev.Result == nil || ev.Result.Usage != want {
+		t.Fatalf("result usage: %+v", ev.Result)
+	}
+}
+
+// TestOpenCodeReasoningPart checks that a reasoning part streams as thought
+// deltas and goes out in full when the part ends.
+func TestOpenCodeReasoningPart(t *testing.T) {
+	oc := coaTestNewOpenCode(t, coaTestRuntime())
+	sess := oc.session("s1", "", "", "", "", PermissionPolicy{})
+	events := coaTestWatch(t, sess.Events())
+	oc.sse.wait(t)
+
+	typ, props := coaTestMessageUpdated("s1", "m1", "assistant")
+	oc.sse.push(t, typ, props)
+	part := func(text string, end float64) map[string]any {
+		p := map[string]any{"id": "r1", "messageID": "m1", "sessionID": "s1", "type": "reasoning", "text": text}
+		if end > 0 {
+			p["time"] = map[string]any{"start": 1, "end": end}
+		}
+		return map[string]any{"part": p}
+	}
+	oc.sse.push(t, "message.part.updated", part("Check", 0))
+	oc.sse.push(t, "message.part.updated", part("Check the cursor.", 2))
+	for _, want := range []string{"Check", " the cursor."} {
+		if ev := events.next(EventThought); ev.Text != want || !ev.Delta {
+			t.Fatalf("thought delta: %+v", ev)
+		}
+	}
+	if ev := events.next(EventThought); ev.Text != "Check the cursor." || ev.Delta {
+		t.Fatalf("full thought: %+v", ev)
+	}
+	// An ended part sends nothing more, also when the turn ends.
+	oc.sse.push(t, "message.part.updated", part("Check the cursor.", 2))
+	oc.sse.push(t, "session.idle", map[string]any{"sessionID": "s1"})
+	events.next(EventResult)
+	for _, ev := range events.buf {
+		if ev.Type == EventThought {
+			t.Fatalf("the ended part went out again: %+v", ev)
 		}
 	}
 }

@@ -805,7 +805,16 @@ func (p *codexProtocol) parseItem(method string, params map[string]any) []Event 
 			return []Event{{Type: EventAssistant, Text: text, Delta: !completed}}
 		}
 	case "reasoning":
-		return nil
+		if !completed {
+			return nil
+		}
+		text := codexReasoningText(item["summary"])
+		if text == "" {
+			text = codexReasoningText(item["content"])
+		}
+		if text != "" {
+			return []Event{{Type: EventThought, Text: text}}
+		}
 	case "commandExecution":
 		output := firstNonEmpty(str(item["aggregatedOutput"]), str(item["output"]))
 		command := str(item["command"])
@@ -1118,4 +1127,19 @@ func codexLimits(raw json.RawMessage) *Limits {
 		return nil
 	}
 	return l
+}
+
+// codexReasoningText joins the parts of a reasoning summary or content list.
+func codexReasoningText(v any) string {
+	list, _ := v.([]any)
+	var parts []string
+	for _, item := range list {
+		switch t := item.(type) {
+		case string:
+			parts = append(parts, t)
+		case map[string]any:
+			parts = append(parts, str(t["text"]))
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n\n"))
 }

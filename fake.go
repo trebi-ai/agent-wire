@@ -24,7 +24,7 @@ const FakeModelsEnv = "AGENTWIRE_FAKE_MODELS"
 // The session writes one NDJSON line to the script's stdin per call:
 // {"type":"user","text":…} for Prompt, {"type":"steer","text":…} for Steer
 // while a turn runs, and {"type":"set_model","model":…} for SetModel. An
-// assistant line with "delta":true is a stream delta. This
+// assistant or thought line with "delta":true is a stream delta. This
 // script echoes a steer line that arrives during its turn:
 //
 //	read -r line
@@ -196,6 +196,9 @@ func (p *fakeProtocol) Parse(line []byte) []Event {
 	case "assistant":
 		delta, _ := m["delta"].(bool)
 		return []Event{{Type: EventAssistant, Text: text("text"), Delta: delta}}
+	case "thought":
+		delta, _ := m["delta"].(bool)
+		return []Event{{Type: EventThought, Text: text("text"), Delta: delta}}
 	case "user":
 		return []Event{{Type: EventUser, Text: text("text")}}
 	case "tool":

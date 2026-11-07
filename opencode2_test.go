@@ -197,7 +197,7 @@ func (oc *oc2TestOpenCode) session(id, directory, instructions string, policy Pe
 	s := &openCode2Session{
 		openCodeBase: newOpenCodeBase(oc.route.rt, oc.route, id, directory, openCode2{}),
 		instructions: instructions, policy: policy.Normalized(),
-		text: map[string]int{}, tools: map[string]string{},
+		text: map[string]int{}, ended: map[string]bool{}, tools: map[string]string{},
 	}
 	oc.route.subscribe(s)
 	oc.route.ensureStream(directory)
@@ -298,6 +298,12 @@ func TestOpenCode2SessionEvents(t *testing.T) {
 	tail := events.next(EventAssistant)
 	if tail.Text != "\n(exit code 0)" || !tail.Delta {
 		t.Fatalf("reconciled tail: %+v", tail)
+	}
+	// Then the full block goes out once, for a caller that keeps only
+	// complete messages.
+	full := events.next(EventAssistant)
+	if full.Text != "pong\n(exit code 0)" || full.Delta {
+		t.Fatalf("full block: %+v", full)
 	}
 	// A repeated ended event has nothing left to send.
 	oc.sse.push(t, "session.text.ended", oc2TestText("m1", "0", "pong\n(exit code 0)"))
@@ -411,31 +417,94 @@ func TestOpenCode2FailureIsClassified(t *testing.T) {
 	}
 }
 
-// TestOpenCode2UsageFromStep checks that a finished step reports tokens and
-// cost, including the V2 nested cache counters.
-func TestOpenCode2UsageFromStep(t *testing.T) {
+// TestOpenCode2TurnUsage checks that the turn reports the sum of its steps,
+// with the V2 nested cache counters and the reasoning tokens as output, once,
+// in a usage event and in the result. The running session total is ignored.
+func TestOpenCode2TurnUsage(t *testing.T) {
 	oc := oc2TestNewOpenCode(t, coaTestRuntime())
 	sess := oc.session("s1", "", "", PermissionPolicy{})
 	events := coaTestWatch(t, sess.Events())
 	oc.sse.wait(t)
 
 	oc.sse.push(t, "session.step.ended", map[string]any{
-		"sessionID": "s1", "assistantMessageID": "m1", "finish": "stop",
+		"sessionID": "s1", "assistantMessageID": "m1", "finish": "tool-calls",
 		"cost": 0.0019,
 		"tokens": map[string]any{
-			"input": 12548, "output": 3, "reasoning": 0,
-			"cache": map[string]any{"read": 128, "write": 0},
+			"input": 12548, "output": 3, "reasoning": 7,
+			"cache": map[string]any{"read": 128, "write": 16},
 		},
 	})
+	oc.sse.push(t, "session.usage.updated", map[string]any{
+		"sessionID": "s1", "cost": 0.0019,
+		"tokens": map[string]any{"input": 12548, "output": 10, "cache": map[string]any{"read": 128}},
+	})
+	// A free model reports no cost; its tokens still count.
+	oc.sse.push(t, "session.step.ended", map[string]any{
+		"sessionID": "s1", "assistantMessageID": "m2", "finish": "stop",
+		"cost": 0,
+		"tokens": map[string]any{
+			"input": 100, "output": 20, "reasoning": 0,
+			"cache": map[string]any{"read": 12000, "write": 0},
+		},
+	})
+	oc.sse.push(t, "session.execution.succeeded", map[string]any{"sessionID": "s1"})
+
 	usage := events.next(EventUsage)
-	if usage.Usage == nil {
-		t.Fatal("no usage event")
+	want := Usage{Input: 12648, Output: 30, CacheRead: 12128, CacheCreation: 16, CostUSD: 0.0019}
+	if usage.Usage == nil || *usage.Usage != want {
+		t.Fatalf("turn usage: %+v, want %+v", usage.Usage, want)
 	}
-	if usage.Usage.Input != 12548 || usage.Usage.Output != 3 || usage.Usage.CacheRead != 128 {
-		t.Fatalf("usage: %+v", usage.Usage)
+	result := events.next(EventResult)
+	if result.Result == nil || result.Result.Usage != want {
+		t.Fatalf("result usage: %+v", result.Result)
 	}
-	if usage.Usage.CostUSD != 0.0019 {
-		t.Fatalf("cost: %+v", usage.Usage)
+	for _, ev := range events.buf {
+		if ev.Type == EventUsage {
+			t.Fatalf("a second usage event: %+v", ev.Usage)
+		}
+	}
+
+	// The next turn starts from zero.
+	oc.sse.push(t, "session.step.ended", map[string]any{
+		"sessionID": "s1", "assistantMessageID": "m3", "finish": "stop",
+		"tokens": map[string]any{"input": 5, "output": 1},
+	})
+	oc.sse.push(t, "session.execution.succeeded", map[string]any{"sessionID": "s1"})
+	next := events.next(EventResult)
+	if next.Result == nil || next.Result.Usage != (Usage{Input: 5, Output: 1}) {
+		t.Fatalf("second turn usage: %+v", next.Result)
+	}
+}
+
+// TestOpenCode2Reasoning checks that reasoning streams as thought deltas and
+// ends as one full thought, apart from the text block of the same ordinal.
+func TestOpenCode2Reasoning(t *testing.T) {
+	oc := oc2TestNewOpenCode(t, coaTestRuntime())
+	sess := oc.session("s1", "", "", PermissionPolicy{})
+	events := coaTestWatch(t, sess.Events())
+	oc.sse.wait(t)
+
+	oc.sse.push(t, "session.reasoning.delta", map[string]any{
+		"sessionID": "s1", "assistantMessageID": "m1", "ordinal": 0, "delta": "Read the ",
+	})
+	oc.sse.push(t, "session.reasoning.delta", map[string]any{
+		"sessionID": "s1", "assistantMessageID": "m1", "ordinal": 0, "delta": "state.",
+	})
+	for _, want := range []string{"Read the ", "state."} {
+		if ev := events.next(EventThought); ev.Text != want || !ev.Delta {
+			t.Fatalf("thought delta: %+v", ev)
+		}
+	}
+	oc.sse.push(t, "session.reasoning.ended", map[string]any{
+		"sessionID": "s1", "assistantMessageID": "m1", "ordinal": 0, "text": "Read the state.",
+	})
+	if ev := events.next(EventThought); ev.Text != "Read the state." || ev.Delta {
+		t.Fatalf("full thought: %+v", ev)
+	}
+	// A text block with the same ordinal is a separate block.
+	oc.sse.push(t, "session.text.ended", oc2TestText("m1", "0", "Done."))
+	if ev := events.next(EventAssistant); ev.Text != "Done." || ev.Delta {
+		t.Fatalf("text block: %+v", ev)
 	}
 }
 

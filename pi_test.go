@@ -363,3 +363,19 @@ func TestPiInstructionsFirstPromptOnly(t *testing.T) {
 		t.Fatalf("prompt with blank instructions = %q", got)
 	}
 }
+
+// TestPiThinking maps a thinking delta and a thinking block to thought events.
+func TestPiThinking(t *testing.T) {
+	t.Parallel()
+	proto := cpTestPiProto(PermissionPolicy{}, "")
+
+	evs := proto.Parse([]byte(`{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"Hm"}}`))
+	if len(evs) != 1 || evs[0].Type != EventThought || evs[0].Text != "Hm" || !evs[0].Delta {
+		t.Fatalf("thinking delta events = %+v", evs)
+	}
+	end := proto.Parse([]byte(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Hmm, read it."},{"type":"text","text":"ok"}]}}`))
+	thought := cpTestFirstEvent(end, EventThought)
+	if thought == nil || thought.Text != "Hmm, read it." || thought.Delta {
+		t.Fatalf("thinking block = %+v", end)
+	}
+}
