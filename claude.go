@@ -661,21 +661,35 @@ func (p *claudeProtocol) parseStreamEvent(m map[string]any) []Event {
 }
 
 func (p *claudeProtocol) parseResult(m map[string]any) []Event {
+	subtype := str(m["subtype"])
+	isErr, _ := m["is_error"].(bool)
+	origin, _ := m["origin"].(map[string]any)
 	p.mu.Lock()
+	// The CLI closes a task notification with its own result before it
+	// answers the queued prompt. The turn is still open.
+	if !isErr && str(origin["kind"]) == "task-notification" && messageUsage(m["usage"]) == nil && p.turnActive {
+		if cost, ok := m["total_cost_usd"].(float64); ok {
+			p.costTotal = cost
+		}
+		p.mu.Unlock()
+		return []Event{{Type: EventStatus, Status: StatusRunning, Text: "task notification"}}
+	}
 	p.sawResult = true
 	p.turnActive = false
 	p.mu.Unlock()
 	// Every tool still open when the turn ends is over; the vendor stream
 	// lost its completion (plan 2026-09-26 B). Close them as cancelled.
 	out := p.cancelOpenTools()
-	subtype := str(m["subtype"])
-	isErr, _ := m["is_error"].(bool)
 	res := &Result{
 		Subtype:   subtype,
 		IsError:   isErr,
 		SessionID: str(m["session_id"]),
 	}
-	res.Text = resultFrameText(m)
+	if isErr {
+		res.Text = resultFrameText(m)
+	} else {
+		res.Text = strings.TrimSpace(str(m["result"]))
+	}
 	if u := messageUsage(m["usage"]); u != nil {
 		res.Usage = *u
 	}

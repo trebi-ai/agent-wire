@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.12.5] - 2026-11-12
+
+### Fixed
+
+- Claude: a result that closes a task notification of the CLI no longer ends a turn that waits for its answer. The session reports a running status in its place, and the cost of that result becomes the base of the next result.
+- Claude: a success result carries its `result` text. Only an error result falls back to the error picker.
+
 ## [v0.12.4] - 2026-11-07
 
 ### Fixed

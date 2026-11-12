@@ -1043,3 +1043,95 @@ func TestClaudeThinking(t *testing.T) {
 		t.Fatalf("thinking delta = %+v", delta)
 	}
 }
+
+// TestClaudeTaskNotificationResultKeepsTurn checks that the result of a task
+// notification does not end a turn that waits for its answer.
+func TestClaudeTaskNotificationResultKeepsTurn(t *testing.T) {
+	t.Parallel()
+	const notice = `{"type":"result","subtype":"success","is_error":false,"result":"","num_turns":0,"duration_api_ms":0,"origin":{"kind":"task-notification"},"usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"total_cost_usd":2.468,"session_id":"s1"}`
+	const noticeTokens = `{"type":"result","subtype":"success","is_error":false,"result":"","origin":{"kind":"task-notification"},"usage":{"input_tokens":5,"output_tokens":0},"total_cost_usd":2.468,"session_id":"s1"}`
+	const real = `{"type":"result","subtype":"success","is_error":false,"result":"done","usage":{"input_tokens":8,"output_tokens":2},"total_cost_usd":2.694,"session_id":"s1"}`
+	tests := []struct {
+		name        string
+		open        bool
+		then        string
+		frame       string
+		wantResults int
+		wantStatus  int
+	}{
+		{name: "open turn", open: true, frame: notice, then: real, wantStatus: 1},
+		{name: "no open turn", frame: notice, wantResults: 1},
+		{name: "notice with tokens", open: true, frame: noticeTokens, wantResults: 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			proto := cpTestClaudeProto(t, PermissionPolicy{})
+			if tc.open {
+				if _, err := proto.EncodePrompt(Prompt{Text: "q"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			evs := proto.Parse([]byte(tc.frame))
+			if got := cpTestCountEvents(evs, EventResult); got != tc.wantResults {
+				t.Fatalf("results = %d, want %d: %+v", got, tc.wantResults, evs)
+			}
+			if got := cpTestCountEvents(evs, EventStatus); got != tc.wantStatus {
+				t.Fatalf("status events = %d, want %d: %+v", got, tc.wantStatus, evs)
+			}
+			if tc.wantStatus == 1 {
+				if st := cpTestFirstEvent(evs, EventStatus); st.Status != StatusRunning {
+					t.Fatalf("status = %q, want running", st.Status)
+				}
+				if !proto.TurnActive() {
+					t.Fatal("turn ended on a task notification")
+				}
+			}
+			if !tc.open && tc.wantResults == 1 {
+				if r := cpTestFirstEvent(evs, EventResult); r.Result.Text != "" {
+					t.Fatalf("text = %q, want empty", r.Result.Text)
+				}
+			}
+			if tc.then == "" {
+				return
+			}
+			evs = proto.Parse([]byte(tc.then))
+			if cpTestCountEvents(evs, EventResult) != 1 {
+				t.Fatalf("final events = %+v", evs)
+			}
+			r := cpTestFirstEvent(evs, EventResult).Result
+			if math.Abs(r.Usage.CostUSD-0.226) > 1e-9 || r.Usage.Input != 8 {
+				t.Fatalf("usage = %+v, want cost 0.226 and input 8", r.Usage)
+			}
+			if proto.TurnActive() {
+				t.Fatal("turn still active after the real result")
+			}
+		})
+	}
+}
+
+// TestClaudeResultText checks the result text of a success and an error frame.
+func TestClaudeResultText(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, frame, want string
+	}{
+		{"success empty", `{"type":"result","subtype":"success","is_error":false,"result":""}`, ""},
+		{"success trimmed", `{"type":"result","subtype":"success","is_error":false,"result":" ok "}`, "ok"},
+		{"error list", `{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["a","b"]}`, "a; b"},
+		{"error empty", `{"type":"result","is_error":true}`, "unknown error"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			proto := cpTestClaudeProto(t, PermissionPolicy{})
+			r := cpTestFirstEvent(proto.Parse([]byte(tc.frame)), EventResult)
+			if r == nil {
+				t.Fatal("no result event")
+			}
+			if r.Result.Text != tc.want {
+				t.Fatalf("text = %q, want %q", r.Result.Text, tc.want)
+			}
+		})
+	}
+}
