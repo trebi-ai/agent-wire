@@ -22,16 +22,11 @@ func TestRecipe(t *testing.T) {
 		update  []string
 		pinned  []string
 	}{
-		{Claude, InstallNPM, "@anthropic-ai/claude-code", "claude",
-			[]string{"npm", "install", "-g", "@anthropic-ai/claude-code@latest"},
-			[]string{"claude", "update"},
-			[]string{"npm", "install", "-g", "@anthropic-ai/claude-code@2.1.0"}},
-		{Codex, InstallNPM, "@openai/codex", "codex",
-			[]string{"npm", "install", "-g", "@openai/codex@latest"},
-			[]string{"codex", "update"},
-			[]string{"npm", "install", "-g", "@openai/codex@2.1.0"}},
-		{OpenCode, InstallNPM, "opencode-ai", "opencode",
-			[]string{"npm", "install", "-g", "opencode-ai@latest"},
+		{Claude, InstallBinary, "@anthropic-ai/claude-code", "claude", nil,
+			[]string{"claude", "update"}, nil},
+		{Codex, InstallBinary, "@openai/codex", "codex", nil,
+			[]string{"codex", "update"}, nil},
+		{OpenCode, InstallBinary, "opencode-ai", "opencode", nil,
 			[]string{"opencode", "upgrade"},
 			[]string{"opencode", "upgrade", "2.1.0"}},
 		{Pi, InstallNPM, "@earendil-works/pi-coding-agent", "pi",
@@ -58,7 +53,9 @@ func TestRecipe(t *testing.T) {
 			t.Errorf("%s: no recipe", c.h)
 			continue
 		}
-		if r.Harness != c.h || r.Method != c.method || r.Package != c.pkg || r.Bin != c.bin || len(r.Requires) == 0 {
+		binary := c.method == InstallBinary
+		if r.Harness != c.h || r.Method != c.method || r.Package != c.pkg || r.Bin != c.bin ||
+			binary != (r.Download != nil) || binary != (len(r.Requires) == 0) {
 			t.Errorf("%s: %+v", c.h, r)
 		}
 		if r.Bin != binName(c.h) {
@@ -71,6 +68,9 @@ func TestRecipe(t *testing.T) {
 			if got := r.UpdateCommand(""); !slices.Equal(got, c.update) {
 				t.Errorf("%s: UpdateCommand = %q, want %q", c.h, got, c.update)
 			}
+		}
+		if binary && r.Command("") != nil {
+			t.Errorf("%s: binary Command = %q, want nil", c.h, r.Command(""))
 		}
 		if c.pinned != nil {
 			if got := r.UpdateCommand("2.1.0"); !slices.Equal(got, c.pinned) {
@@ -130,10 +130,25 @@ func TestRecipeIsACopy(t *testing.T) {
 	t.Parallel()
 	r, _ := Recipe(Claude)
 	r.UpdateOffEnv["DISABLE_UPDATES"] = "0"
-	r.Requires[0] = "x"
+	p, _ := Recipe(Pi)
+	p.Requires[0] = "x"
 	again, _ := Recipe(Claude)
-	if again.UpdateOffEnv["DISABLE_UPDATES"] != "1" || again.Requires[0] != "npm" {
+	if again.UpdateOffEnv["DISABLE_UPDATES"] != "1" {
 		t.Fatal("Recipe leaks the shared table")
+	}
+	if again, _ := Recipe(Pi); again.Requires[0] != "npm" {
+		t.Fatal("Recipe leaks the shared table")
+	}
+	r.Download.Platforms["darwin/arm64"] = "x"
+	r.Download.Archives = map[string]ArchiveKind{"darwin/arm64": ArchiveZip}
+	again, _ = Recipe(Claude)
+	if again.Download.Platforms["darwin/arm64"] != "darwin-arm64" || again.Download.Archives != nil {
+		t.Fatal("Recipe leaks the shared download table")
+	}
+	o, _ := Recipe(OpenCode)
+	o.Download.Archives["linux/amd64"] = ArchiveZip
+	if again, _ := Recipe(OpenCode); again.Download.Archives["linux/amd64"] != ArchiveTarGz {
+		t.Fatal("Recipe leaks the shared archive table")
 	}
 }
 
@@ -162,11 +177,11 @@ func TestLatestVersion(t *testing.T) {
 			return
 		}
 		switch r.URL.EscapedPath() {
-		case "/-/package/@anthropic-ai/claude-code/dist-tags":
+		case "/-/package/@earendil-works/pi-coding-agent/dist-tags":
 			_, _ = w.Write([]byte(`{"latest":"2.1.308","next":"2.2.0-beta.1"}`))
-		case "/-/package/@openai/codex/dist-tags":
+		case "/-/package/@xai-official/grok/dist-tags":
 			_, _ = w.Write([]byte(`{"latest":"v0.130.0"}`))
-		case "/-/package/opencode-ai/dist-tags":
+		case "/-/package/@oh-my-pi/pi-coding-agent/dist-tags":
 			_, _ = w.Write([]byte(`{"latest":"nightly"}`))
 		case "/-/package/@github/copilot/dist-tags":
 			_, _ = w.Write([]byte(`not json`))
@@ -181,9 +196,9 @@ func TestLatestVersion(t *testing.T) {
 		want    string
 		wantErr string
 	}{
-		{Claude, "2.1.308", ""},
-		{Codex, "0.130.0", ""},
-		{OpenCode, "", "no version"},
+		{Pi, "2.1.308", ""},
+		{Grok, "0.130.0", ""},
+		{OMP, "", "no version"},
 		{Copilot, "", "invalid character"},
 		{Gemini, "", "404"},
 	}
@@ -210,5 +225,155 @@ func TestLatestVersionContext(t *testing.T) {
 	cancel()
 	if _, err := registryRuntime(srv).LatestVersion(ctx, Claude); !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
+
+// downloadServer fakes the vendor hosts of the binary recipes.
+func downloadServer(t *testing.T, routes map[string]string) *Runtime {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, ok := routes[r.URL.Path]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return registryRuntime(srv)
+}
+
+const (
+	hexA = "84590fefe6338be9087f5814b61f9a54c5f21524163a4c127cb5a808e31009f2"
+	hexB = "8a232260df7a12c5e83e0b4b7659e1c8d9259b41942517bc0068d8ab55c36461"
+)
+
+func TestLatestVersionBinary(t *testing.T) {
+	t.Parallel()
+	rt := downloadServer(t, map[string]string{
+		"/claude-code-releases/latest":              "2.1.9\n",
+		"/repos/openai/codex/releases/latest":       `{"tag_name":"rust-v0.9.0"}`,
+		"/repos/anomalyco/opencode/releases/latest": `{"tag_name":"nightly"}`,
+	})
+	cases := []struct {
+		h       Harness
+		want    string
+		wantErr string
+	}{
+		{Claude, "2.1.9", ""},
+		{Codex, "0.9.0", ""},
+		{OpenCode, "", "no version"},
+	}
+	for _, c := range cases {
+		got, err := rt.LatestVersion(context.Background(), c.h)
+		if got != c.want || (c.wantErr == "") != (err == nil) || (err != nil && !strings.Contains(err.Error(), c.wantErr)) {
+			t.Errorf("%s: %q, %v; want %q, %q", c.h, got, err, c.want, c.wantErr)
+		}
+	}
+	html := downloadServer(t, map[string]string{"/claude-code-releases/latest": "<!doctype html><html></html>"})
+	if _, err := html.LatestVersion(context.Background(), Claude); err == nil || !strings.Contains(err.Error(), "no version") {
+		t.Errorf("html body: %v, want no version", err)
+	}
+}
+
+func TestRecipeProgramPath(t *testing.T) {
+	t.Parallel()
+	want := map[Harness]string{
+		Claude: "bin/claude", Codex: "bin/codex", OpenCode: "bin/opencode",
+		Pi: "bin/pi", Grok: "bin/grok", Cursor: "bin/cursor-agent",
+	}
+	for h, p := range want {
+		r, _ := Recipe(h)
+		if got := r.ProgramPath(); got != p {
+			t.Errorf("%s: ProgramPath = %q, want %q", h, got, p)
+		}
+	}
+}
+
+func TestAssetManifest(t *testing.T) {
+	t.Parallel()
+	rt := downloadServer(t, map[string]string{
+		"/claude-code-releases/latest": "2.1.9",
+		"/claude-code-releases/2.1.9/manifest.json": `{"version":"2.1.9","platforms":{
+			"darwin-arm64":{"binary":"claude","checksum":"` + hexA + `","size":347406976},
+			"linux-x64":{"binary":"claude","checksum":"not hex","size":1}}}`,
+	})
+	ctx := context.Background()
+	want := Asset{
+		URL:    "https://downloads.claude.ai/claude-code-releases/2.1.9/darwin-arm64/claude",
+		Digest: "sha256:" + hexA, Size: 347406976, Archive: ArchiveRaw, Program: "bin/claude",
+	}
+	for _, v := range []string{"2.1.9", "v2.1.9", ""} {
+		got, err := rt.Asset(ctx, Claude, v, "darwin", "arm64")
+		if err != nil || got != want {
+			t.Errorf("version %q: %+v, %v; want %+v", v, got, err, want)
+		}
+	}
+	if _, err := rt.Asset(ctx, Claude, "2.1.9", "darwin", "amd64"); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("platform not in manifest: %v, want ErrUnsupported", err)
+	}
+	if _, err := rt.Asset(ctx, Claude, "2.1.9", "linux", "amd64"); err == nil || !strings.Contains(err.Error(), "digest") {
+		t.Errorf("bad checksum: %v, want digest error", err)
+	}
+	if _, err := rt.Asset(ctx, Claude, "9.9.9", "darwin", "arm64"); err == nil || !strings.Contains(err.Error(), "404") {
+		t.Errorf("unknown version: %v, want 404", err)
+	}
+	if _, err := rt.Asset(ctx, Claude, "../x", "darwin", "arm64"); err == nil {
+		t.Error("unsafe version: want error")
+	}
+}
+
+func TestAssetGitHub(t *testing.T) {
+	t.Parallel()
+	rt := downloadServer(t, map[string]string{
+		"/repos/openai/codex/releases/tags/rust-v0.9.0": `{"assets":[
+			{"name":"codex-package-aarch64-apple-darwin.tar.gz","browser_download_url":"https://example.test/codex.tgz","digest":"sha256:` + hexB + `","size":99},
+			{"name":"codex-package-x86_64-apple-darwin.tar.gz","browser_download_url":"https://example.test/codex-x.tgz","digest":"","size":5}]}`,
+		"/repos/anomalyco/opencode/releases/tags/v1.2.3": `{"assets":[
+			{"name":"opencode-darwin-arm64.zip","browser_download_url":"https://example.test/oc.zip","digest":"sha256:` + hexB + `","size":7},
+			{"name":"opencode-linux-x64.tar.gz","browser_download_url":"https://example.test/oc.tgz","digest":"sha256:` + hexA + `","size":8}]}`,
+	})
+	ctx := context.Background()
+	got, err := rt.Asset(ctx, Codex, "0.9.0", "darwin", "arm64")
+	want := Asset{URL: "https://example.test/codex.tgz", Digest: "sha256:" + hexB, Size: 99, Archive: ArchiveTarGz, Program: "bin/codex"}
+	if err != nil || got != want {
+		t.Errorf("codex: %+v, %v; want %+v", got, err, want)
+	}
+	got, err = rt.Asset(ctx, OpenCode, "1.2.3", "darwin", "arm64")
+	want = Asset{URL: "https://example.test/oc.zip", Digest: "sha256:" + hexB, Size: 7, Archive: ArchiveZip, Program: "bin/opencode"}
+	if err != nil || got != want {
+		t.Errorf("opencode darwin: %+v, %v; want %+v", got, err, want)
+	}
+	got, err = rt.Asset(ctx, OpenCode, "1.2.3", "linux", "amd64")
+	want = Asset{URL: "https://example.test/oc.tgz", Digest: "sha256:" + hexA, Size: 8, Archive: ArchiveTarGz, Program: "bin/opencode"}
+	if err != nil || got != want {
+		t.Errorf("opencode linux: %+v, %v; want %+v", got, err, want)
+	}
+	if _, err := rt.Asset(ctx, Codex, "0.9.0", "linux", "amd64"); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("missing asset: %v, want ErrUnsupported", err)
+	}
+	if _, err := rt.Asset(ctx, Codex, "0.9.0", "darwin", "amd64"); err == nil || errors.Is(err, ErrUnsupported) || !strings.Contains(err.Error(), "digest") {
+		t.Errorf("empty digest: %v, want digest error", err)
+	}
+	if _, err := rt.Asset(ctx, Codex, "0.8.0", "darwin", "arm64"); err == nil || !strings.Contains(err.Error(), "404") {
+		t.Errorf("unknown tag: %v, want 404", err)
+	}
+}
+
+func TestAssetPlatform(t *testing.T) {
+	t.Parallel()
+	rt := New(Options{HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("no network expected")
+	})}})
+	ctx := context.Background()
+	for _, h := range []Harness{Claude, Codex, OpenCode} {
+		if _, err := rt.Asset(ctx, h, "1.0.0", "linux", "riscv64"); !errors.Is(err, ErrUnsupported) {
+			t.Errorf("%s riscv64: %v, want ErrUnsupported", h, err)
+		}
+	}
+	for _, h := range []Harness{Pi, Cursor, Fake} {
+		if _, err := rt.Asset(ctx, h, "1.0.0", "darwin", "arm64"); !errors.Is(err, ErrUnsupported) {
+			t.Errorf("%s: %v, want ErrUnsupported", h, err)
+		}
 	}
 }

@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.13.0] - 2026-11-14
+
+### Added
+
+- Binary install method. The recipes of Claude, Codex, and OpenCode use `InstallBinary` in place of npm. `InstallRecipe.Download` holds the vendor facts: the source (a vendor manifest or a GitHub release), the platform names, the archive format, and the program path. `InstallRecipe.ProgramPath` gives the path of the program in the install folder. The library still downloads nothing.
+- `Runtime.Asset` resolves the download URL, the sha256 digest, the size, and the archive format of one version for a goos and goarch. It reads metadata only, through `Options.HTTPClient`. A platform without a binary gives `ErrUnsupported`.
+- Types `Download`, `Asset`, `ArchiveKind`, and `DownloadSource`.
+
+### Changed
+
+- `Runtime.LatestVersion` also reads the latest version of a binary recipe: the version file of the vendor, or the latest GitHub release.
+- `Recipe` of Claude, Codex, and OpenCode has method `InstallBinary`, no `Requires`, and a nil `Command`.
+
 ## [v0.12.5] - 2026-11-12
 
 ### Fixed

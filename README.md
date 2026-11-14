@@ -180,7 +180,7 @@ Other escape hatches: `ExtraArgs` appends consumer flags verbatim, `BaseCommand`
 
 ## Vendor binaries and logins
 
-The library spawns the vendor binary that is on the machine and uses the machine's own login. It never reads, copies or stores vendor tokens. It does not install or update vendor binaries, and it does not require vendor SDKs at run time.
+The library spawns the vendor binary that is on the machine and uses the machine's own login. It never reads, copies or stores vendor tokens. It does not install or update vendor binaries, and it does not require vendor SDKs at run time. `Recipe` gives the vendor facts to install a binary: an npm package or, for some harnesses, a binary download. `Runtime.Asset` resolves the URL, the sha256 digest, and the size of a binary download, and `Runtime.LatestVersion` finds the newest version. The caller does the download, the check, and the unpack.
 
 ## Development
 
