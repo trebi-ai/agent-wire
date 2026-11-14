@@ -1,11 +1,15 @@
 package agentwire
 
 import (
+	"bytes"
+	"cmp"
 	"context"
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -145,10 +149,10 @@ func TestRecipeIsACopy(t *testing.T) {
 	if again.Download.Platforms["darwin/arm64"] != "darwin-arm64" || again.Download.Archives != nil {
 		t.Fatal("Recipe leaks the shared download table")
 	}
-	o, _ := Recipe(OpenCode)
-	o.Download.Archives["linux/amd64"] = ArchiveZip
-	if again, _ := Recipe(OpenCode); again.Download.Archives["linux/amd64"] != ArchiveTarGz {
-		t.Fatal("Recipe leaks the shared archive table")
+	c, _ := Recipe(Codex)
+	c.Download.Programs["linux/amd64"] = "x"
+	if again, _ := Recipe(Codex); again.Download.Programs["linux/amd64"] != "package/vendor/x86_64-unknown-linux-musl/bin/codex" {
+		t.Fatal("Recipe leaks the shared program table")
 	}
 }
 
@@ -251,9 +255,9 @@ const (
 func TestLatestVersionBinary(t *testing.T) {
 	t.Parallel()
 	rt := downloadServer(t, map[string]string{
-		"/claude-code-releases/latest":              "2.1.9\n",
-		"/repos/openai/codex/releases/latest":       `{"tag_name":"rust-v0.9.0"}`,
-		"/repos/anomalyco/opencode/releases/latest": `{"tag_name":"nightly"}`,
+		"/claude-code-releases/latest":       "2.1.9\n",
+		"/-/package/@openai/codex/dist-tags": `{"latest":"0.9.0"}`,
+		"/-/package/opencode-ai/dist-tags":   `{"latest":"nightly"}`,
 	})
 	cases := []struct {
 		h       Harness
@@ -278,8 +282,14 @@ func TestLatestVersionBinary(t *testing.T) {
 
 func TestRecipeProgramPath(t *testing.T) {
 	t.Parallel()
+	codex := map[string]string{
+		"darwin/arm64": "package/vendor/aarch64-apple-darwin/bin/codex",
+		"darwin/amd64": "package/vendor/x86_64-apple-darwin/bin/codex",
+		"linux/arm64":  "package/vendor/aarch64-unknown-linux-musl/bin/codex",
+		"linux/amd64":  "package/vendor/x86_64-unknown-linux-musl/bin/codex",
+	}[runtime.GOOS+"/"+runtime.GOARCH]
 	want := map[Harness]string{
-		Claude: "bin/claude", Codex: "bin/codex", OpenCode: "bin/opencode",
+		Claude: "bin/claude", Codex: cmp.Or(codex, "bin/codex"), OpenCode: "package/bin/opencode",
 		Pi: "bin/pi", Grok: "bin/grok", Cursor: "bin/cursor-agent",
 	}
 	for h, p := range want {
@@ -323,40 +333,39 @@ func TestAssetManifest(t *testing.T) {
 	}
 }
 
-func TestAssetGitHub(t *testing.T) {
+func TestAssetNPM(t *testing.T) {
 	t.Parallel()
+	sum512 := strings.Repeat("ab", 64)
+	integrity := "sha512-" + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0xab}, 64))
 	rt := downloadServer(t, map[string]string{
-		"/repos/openai/codex/releases/tags/rust-v0.9.0": `{"assets":[
-			{"name":"codex-package-aarch64-apple-darwin.tar.gz","browser_download_url":"https://example.test/codex.tgz","digest":"sha256:` + hexB + `","size":99},
-			{"name":"codex-package-x86_64-apple-darwin.tar.gz","browser_download_url":"https://example.test/codex-x.tgz","digest":"","size":5}]}`,
-		"/repos/anomalyco/opencode/releases/tags/v1.2.3": `{"assets":[
-			{"name":"opencode-darwin-arm64.zip","browser_download_url":"https://example.test/oc.zip","digest":"sha256:` + hexB + `","size":7},
-			{"name":"opencode-linux-x64.tar.gz","browser_download_url":"https://example.test/oc.tgz","digest":"sha256:` + hexA + `","size":8}]}`,
+		"/-/package/@openai/codex/dist-tags": `{"latest":"0.9.0"}`,
+		"/@openai/codex/0.9.0-darwin-arm64":  `{"dist":{"tarball":"https://example.test/codex.tgz","integrity":"` + integrity + `"}}`,
+		"/@openai/codex/0.9.0-darwin-x64":    `{"dist":{"tarball":"https://example.test/codex-x.tgz","integrity":"sha1-abc"}}`,
+		"/@openai/codex/0.9.0-linux-x64":     `{"dist":{"tarball":"http://example.test/codex.tgz","integrity":"` + integrity + `"}}`,
+		"/opencode-linux-arm64/1.2.3":        `{"dist":{"tarball":"https://example.test/oc.tgz","integrity":"` + integrity + `"}}`,
 	})
 	ctx := context.Background()
-	got, err := rt.Asset(ctx, Codex, "0.9.0", "darwin", "arm64")
-	want := Asset{URL: "https://example.test/codex.tgz", Digest: "sha256:" + hexB, Size: 99, Archive: ArchiveTarGz, Program: "bin/codex"}
+	want := Asset{URL: "https://example.test/codex.tgz", Digest: "sha512:" + sum512, Archive: ArchiveTarGz,
+		Program: "package/vendor/aarch64-apple-darwin/bin/codex"}
+	for _, v := range []string{"0.9.0", ""} {
+		got, err := rt.Asset(ctx, Codex, v, "darwin", "arm64")
+		if err != nil || got != want {
+			t.Errorf("codex %q: %+v, %v; want %+v", v, got, err, want)
+		}
+	}
+	got, err := rt.Asset(ctx, OpenCode, "1.2.3", "linux", "arm64")
+	want = Asset{URL: "https://example.test/oc.tgz", Digest: "sha512:" + sum512, Archive: ArchiveTarGz, Program: "package/bin/opencode"}
 	if err != nil || got != want {
-		t.Errorf("codex: %+v, %v; want %+v", got, err, want)
+		t.Errorf("opencode: %+v, %v; want %+v", got, err, want)
 	}
-	got, err = rt.Asset(ctx, OpenCode, "1.2.3", "darwin", "arm64")
-	want = Asset{URL: "https://example.test/oc.zip", Digest: "sha256:" + hexB, Size: 7, Archive: ArchiveZip, Program: "bin/opencode"}
-	if err != nil || got != want {
-		t.Errorf("opencode darwin: %+v, %v; want %+v", got, err, want)
+	if _, err := rt.Asset(ctx, Codex, "0.9.0", "darwin", "amd64"); err == nil || !strings.Contains(err.Error(), "integrity") {
+		t.Errorf("sha1 integrity: %v, want integrity error", err)
 	}
-	got, err = rt.Asset(ctx, OpenCode, "1.2.3", "linux", "amd64")
-	want = Asset{URL: "https://example.test/oc.tgz", Digest: "sha256:" + hexA, Size: 8, Archive: ArchiveTarGz, Program: "bin/opencode"}
-	if err != nil || got != want {
-		t.Errorf("opencode linux: %+v, %v; want %+v", got, err, want)
-	}
-	if _, err := rt.Asset(ctx, Codex, "0.9.0", "linux", "amd64"); !errors.Is(err, ErrUnsupported) {
-		t.Errorf("missing asset: %v, want ErrUnsupported", err)
-	}
-	if _, err := rt.Asset(ctx, Codex, "0.9.0", "darwin", "amd64"); err == nil || errors.Is(err, ErrUnsupported) || !strings.Contains(err.Error(), "digest") {
-		t.Errorf("empty digest: %v, want digest error", err)
+	if _, err := rt.Asset(ctx, Codex, "0.9.0", "linux", "amd64"); err == nil || !strings.Contains(err.Error(), "tarball") {
+		t.Errorf("http tarball: %v, want tarball error", err)
 	}
 	if _, err := rt.Asset(ctx, Codex, "0.8.0", "darwin", "arm64"); err == nil || !strings.Contains(err.Error(), "404") {
-		t.Errorf("unknown tag: %v, want 404", err)
+		t.Errorf("unknown version: %v, want 404", err)
 	}
 }
 

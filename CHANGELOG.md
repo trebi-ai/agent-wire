@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.14.0] - 2026-11-14
+
+### Changed
+
+- Codex and OpenCode download from the npm package of their platform, read over HTTPS from `registry.npmjs.org`. The install needs no npm program. The registry gives the latest version, the tarball URL, and a sha512 digest. The GitHub API allowed only 60 calls per hour for each address with no token, so a shared address could not install.
+- `Asset.Digest` is `sha256:<hex>` or `sha512:<hex>`. A caller must check both forms.
+- `InstallRecipe.ProgramPath` gives the path for the platform of this machine.
+
+### Added
+
+- `SourceNPM` download source. `Download.Asset` is the platform package as `name@version`, with the `{version}` and `{platform}` placeholders.
+- `Download.Programs` overrides `Download.Program` for each platform. The Codex program is at `package/vendor/<target>/bin/codex`.
+
+### Removed
+
+- `SourceGitHub` and `Download.Tag`. No recipe uses a GitHub release now.
+
 ## [v0.13.0] - 2026-11-14
 
 ### Added

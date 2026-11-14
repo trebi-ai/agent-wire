@@ -2,12 +2,15 @@ package agentwire
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"maps"
 	"net/http"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -39,14 +42,6 @@ const (
 	ArchiveZip ArchiveKind = "zip"
 )
 
-// ext is the file extension in an asset name. A raw file has none.
-func (k ArchiveKind) ext() string {
-	if k == ArchiveRaw {
-		return ""
-	}
-	return string(k)
-}
-
 // DownloadSource is where the release data of a binary recipe lives.
 type DownloadSource string
 
@@ -54,20 +49,21 @@ const (
 	// SourceManifest is a vendor host with a version file and a manifest
 	// per version.
 	SourceManifest DownloadSource = "manifest"
-	// SourceGitHub is a GitHub release.
-	SourceGitHub DownloadSource = "github"
+	// SourceNPM is the npm registry, read over HTTPS. The install needs no
+	// npm program.
+	SourceNPM DownloadSource = "npm"
 )
 
 // Download holds the vendor facts of a binary install.
 type Download struct {
 	Source DownloadSource
-	// Base is the manifest base URL, or "owner/repo" for GitHub.
+	// Base is the manifest base URL, or the npm package that gives the
+	// latest version.
 	Base string
-	// Asset names the release asset. {version}, {platform} and {ext} are
-	// placeholders. The manifest source does not use it.
+	// Asset is the npm package of one platform, as "name@version".
+	// {version} and {platform} are placeholders. The manifest source does
+	// not use it.
 	Asset string
-	// Tag is the GitHub release tag, such as "v{version}".
-	Tag string
 	// Channel is the manifest file that holds the latest version.
 	Channel string
 	// Platforms maps "goos/goarch" to the platform name in the vendor
@@ -79,13 +75,15 @@ type Download struct {
 	Archives map[string]ArchiveKind
 	// Program is the path of the program in the unpacked folder.
 	Program string
+	// Programs overrides Program for the listed "goos/goarch" platforms.
+	Programs map[string]string
 }
 
 // Asset is one downloadable release file. The caller downloads it, checks
 // Digest and Size, and unpacks it.
 type Asset struct {
 	URL string
-	// Digest is "sha256:<hex>".
+	// Digest is "sha256:<hex>" or "sha512:<hex>".
 	Digest string
 	// Size is the byte size. Zero means that the vendor gives none.
 	Size    int64
@@ -97,13 +95,16 @@ type Asset struct {
 func (d Download) clone() *Download {
 	d.Platforms = maps.Clone(d.Platforms)
 	d.Archives = maps.Clone(d.Archives)
+	d.Programs = maps.Clone(d.Programs)
 	return &d
 }
 
-// tagPrefix is the part of Tag before the version.
-func (d Download) tagPrefix() string {
-	prefix, _, _ := strings.Cut(d.Tag, "{version}")
-	return prefix
+// program is the path of the program for one platform.
+func (d Download) program(goos, goarch string) string {
+	if p, ok := d.Programs[goos+"/"+goarch]; ok {
+		return p
+	}
+	return d.Program
 }
 
 // InstallRecipe holds the vendor facts to install and update one harness.
@@ -150,10 +151,12 @@ func (r InstallRecipe) Command(version string) []string {
 }
 
 // ProgramPath is the path of the program in the install folder of one
-// version.
+// version, on this machine.
 func (r InstallRecipe) ProgramPath() string {
 	if r.Download != nil {
-		return r.Download.Program
+		if p := r.Download.program(runtime.GOOS, runtime.GOARCH); p != "" {
+			return p
+		}
 	}
 	return "bin/" + r.Bin
 }
@@ -192,21 +195,26 @@ var installRecipes = map[Harness]InstallRecipe{
 			Platforms: map[string]string{
 				"darwin/arm64": "darwin-arm64", "darwin/amd64": "darwin-x64",
 				"linux/arm64": "linux-arm64", "linux/amd64": "linux-x64"}}},
+	// The npm package of each platform holds the vendor folder of the
+	// release, with the program and its helper files.
 	Codex: {Method: InstallBinary, Package: "@openai/codex", Bin: "codex",
 		Update:        []string{"update"},
 		UpdateOffArgs: []string{"-c", "check_for_update_on_startup=false"},
-		Download: &Download{Source: SourceGitHub, Base: "openai/codex", Tag: "rust-v{version}",
-			Asset: "codex-package-{platform}.{ext}", Archive: ArchiveTarGz, Program: "bin/codex",
+		Download: &Download{Source: SourceNPM, Base: "@openai/codex", Asset: "@openai/codex@{version}-{platform}",
+			Archive: ArchiveTarGz,
 			Platforms: map[string]string{
-				"darwin/arm64": "aarch64-apple-darwin", "darwin/amd64": "x86_64-apple-darwin",
-				"linux/arm64": "aarch64-unknown-linux-musl", "linux/amd64": "x86_64-unknown-linux-musl"}}},
-	// The OpenCode zip holds "opencode" at its root; the caller puts it at Program.
+				"darwin/arm64": "darwin-arm64", "darwin/amd64": "darwin-x64",
+				"linux/arm64": "linux-arm64", "linux/amd64": "linux-x64"},
+			Programs: map[string]string{
+				"darwin/arm64": "package/vendor/aarch64-apple-darwin/bin/codex",
+				"darwin/amd64": "package/vendor/x86_64-apple-darwin/bin/codex",
+				"linux/arm64":  "package/vendor/aarch64-unknown-linux-musl/bin/codex",
+				"linux/amd64":  "package/vendor/x86_64-unknown-linux-musl/bin/codex"}}},
 	OpenCode: {Method: InstallBinary, Package: "opencode-ai", Bin: "opencode",
 		Update: []string{"upgrade"}, UpdateTo: []string{"upgrade"},
 		UpdateOffEnv: map[string]string{"OPENCODE_DISABLE_AUTOUPDATE": "1"},
-		Download: &Download{Source: SourceGitHub, Base: "anomalyco/opencode", Tag: "v{version}",
-			Asset: "opencode-{platform}.{ext}", Archive: ArchiveZip, Program: "bin/opencode",
-			Archives: map[string]ArchiveKind{"linux/arm64": ArchiveTarGz, "linux/amd64": ArchiveTarGz},
+		Download: &Download{Source: SourceNPM, Base: "opencode-ai", Asset: "opencode-{platform}@{version}",
+			Archive: ArchiveTarGz, Program: "package/bin/opencode",
 			Platforms: map[string]string{
 				"darwin/arm64": "darwin-arm64", "darwin/amd64": "darwin-x64",
 				"linux/arm64": "linux-arm64", "linux/amd64": "linux-x64"}}},
@@ -248,9 +256,6 @@ var versionRe = regexp.MustCompile(`^\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$`)
 
 // sha256Re is a lowercase hex sha256 digest.
 var sha256Re = regexp.MustCompile(`^[0-9a-f]{64}$`)
-
-// githubAPI is the GitHub API base URL.
-const githubAPI = "https://api.github.com"
 
 // maxMetaBytes bounds one metadata response.
 const maxMetaBytes = 8 << 20
@@ -306,7 +311,12 @@ func (rt *Runtime) LatestVersion(ctx context.Context, h Harness) (string, error)
 	if r.Download != nil {
 		return rt.latestDownload(ctx, r.Download)
 	}
-	url := npmRegistry + "/-/package/" + r.Package + "/dist-tags"
+	return rt.npmLatest(ctx, r.Package)
+}
+
+// npmLatest reads the "latest" dist-tag of one npm package.
+func (rt *Runtime) npmLatest(ctx context.Context, pkg string) (string, error) {
+	url := npmRegistry + "/-/package/" + pkg + "/dist-tags"
 	var tags struct {
 		Latest string `json:"latest"`
 	}
@@ -333,20 +343,8 @@ func (rt *Runtime) latestDownload(ctx context.Context, d *Download) (string, err
 			return "", fmt.Errorf("GET %s: no version in %q", url, clip(v))
 		}
 		return v, nil
-	case SourceGitHub:
-		url := githubAPI + "/repos/" + d.Base + "/releases/latest"
-		var rel struct {
-			TagName string `json:"tag_name"`
-		}
-		if err := rt.getJSON(ctx, url, &rel); err != nil {
-			return "", err
-		}
-		prefix := d.tagPrefix()
-		v := strings.TrimPrefix(rel.TagName, prefix)
-		if !strings.HasPrefix(rel.TagName, prefix) || !versionRe.MatchString(v) {
-			return "", fmt.Errorf("GET %s: no version in tag %q", url, clip(rel.TagName))
-		}
-		return v, nil
+	case SourceNPM:
+		return rt.npmLatest(ctx, d.Base)
 	}
 	return "", fmt.Errorf("%w: download source %q", ErrUnsupported, d.Source)
 }
@@ -360,7 +358,7 @@ func clip(s string) string {
 }
 
 // Asset resolves the download of version for one platform: the URL, the
-// sha256 digest, the size, and the archive format. An empty version means
+// digest, the size, and the archive format. An empty version means
 // the latest. It reads metadata only and never downloads the file. A harness
 // with no binary download, or a platform that the vendor does not list,
 // gives ErrUnsupported.
@@ -388,12 +386,12 @@ func (rt *Runtime) Asset(ctx context.Context, h Harness, version, goos, goarch s
 	if k, ok := d.Archives[goos+"/"+goarch]; ok {
 		archive = k
 	}
-	a := Asset{Archive: archive, Program: d.Program}
+	a := Asset{Archive: archive, Program: d.program(goos, goarch)}
 	switch d.Source {
 	case SourceManifest:
 		return rt.manifestAsset(ctx, r, a, version, platform)
-	case SourceGitHub:
-		return rt.githubAsset(ctx, d, a, version, platform)
+	case SourceNPM:
+		return rt.npmAsset(ctx, d, a, version, platform)
 	}
 	return Asset{}, fmt.Errorf("%w: download source %q", ErrUnsupported, d.Source)
 }
@@ -423,40 +421,51 @@ func (rt *Runtime) manifestAsset(ctx context.Context, r InstallRecipe, a Asset, 
 	return a, nil
 }
 
-func (rt *Runtime) githubAsset(ctx context.Context, d *Download, a Asset, version, platform string) (Asset, error) {
-	tag := strings.ReplaceAll(d.Tag, "{version}", version)
-	url := githubAPI + "/repos/" + d.Base + "/releases/tags/" + tag
-	var rel struct {
-		Assets []struct {
-			Name   string `json:"name"`
-			URL    string `json:"browser_download_url"`
-			Digest string `json:"digest"`
-			Size   int64  `json:"size"`
-		} `json:"assets"`
+// npmAsset reads the dist facts of the platform package from the npm
+// registry. The size stays zero: the registry gives none for the tarball.
+func (rt *Runtime) npmAsset(ctx context.Context, d *Download, a Asset, version, platform string) (Asset, error) {
+	spec := strings.NewReplacer("{version}", version, "{platform}", platform).Replace(d.Asset)
+	i := strings.LastIndex(spec, "@")
+	if i <= 0 {
+		return Asset{}, fmt.Errorf("%w: bad npm spec %q", ErrUnsupported, spec)
 	}
-	if err := rt.getJSON(ctx, url, &rel); err != nil {
+	url := npmRegistry + "/" + spec[:i] + "/" + spec[i+1:]
+	var m struct {
+		Dist struct {
+			Tarball   string `json:"tarball"`
+			Integrity string `json:"integrity"`
+		} `json:"dist"`
+	}
+	if err := rt.getJSON(ctx, url, &m); err != nil {
 		return Asset{}, err
 	}
-	name := strings.NewReplacer("{version}", version, "{platform}", platform, "{ext}", a.Archive.ext()).Replace(d.Asset)
-	for _, f := range rel.Assets {
-		if f.Name != name {
-			continue
-		}
-		digest, err := normalizeDigest(f.Digest)
-		if err != nil {
-			return Asset{}, fmt.Errorf("asset %s: %w", name, err)
-		}
-		a.URL, a.Digest, a.Size = f.URL, digest, f.Size
-		return a, nil
+	if !strings.HasPrefix(m.Dist.Tarball, "https://") {
+		return Asset{}, fmt.Errorf("GET %s: bad tarball URL %q", url, clip(m.Dist.Tarball))
 	}
-	return Asset{}, fmt.Errorf("%w: release %s has no asset %s", ErrUnsupported, tag, name)
+	digest, err := integrityDigest(m.Dist.Integrity)
+	if err != nil {
+		return Asset{}, fmt.Errorf("GET %s: %w", url, err)
+	}
+	a.URL, a.Digest = m.Dist.Tarball, digest
+	return a, nil
+}
+
+// integrityDigest gives "sha512:<hex>" from an npm "sha512-<base64>"
+// integrity value.
+func integrityDigest(s string) (string, error) {
+	b64, ok := strings.CutPrefix(strings.TrimSpace(s), "sha512-")
+	sum, err := base64.StdEncoding.DecodeString(b64)
+	if !ok || err != nil || len(sum) != 64 {
+		return "", fmt.Errorf("bad sha512 integrity %q", clip(s))
+	}
+	return "sha512:" + hex.EncodeToString(sum), nil
 }
 
 // normalizeDigest gives "sha256:<hex>" from "<hex>" or "sha256:<hex>".
 func normalizeDigest(s string) (string, error) {
-	hex := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(s), "sha256:"))
-	if !sha256Re.MatchString(hex) {
+	sum := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(s), "sha256:"))
+	if !sha256Re.MatchString(sum) {
 		return "", fmt.Errorf("bad sha256 digest %q", clip(s))
 	}
-	return "sha256:" + hex, nil
+	return "sha256:" + sum, nil
 }
