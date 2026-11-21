@@ -27,6 +27,23 @@ type Classification struct {
 	Message string
 }
 
+// errorEvent builds the EventError for text. EndReason carries the class.
+func (c Classification) errorEvent(text string) Event {
+	return Event{Type: EventError, Error: text, Code: c.Code, EndReason: string(c.Class)}
+}
+
+// exitText picks the text of a process exit: the trimmed stderr, else the Go
+// error, else fallback.
+func exitText(stderr string, err error, fallback string) string {
+	if text := strings.TrimSpace(stderr); text != "" {
+		return text
+	}
+	if err != nil {
+		return err.Error()
+	}
+	return fallback
+}
+
 // EndReason maps a class to the run end-reason vocabulary
 // (auth|limit|failed|launch).
 func (c Classification) EndReason() string {

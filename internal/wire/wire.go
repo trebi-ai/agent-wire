@@ -545,6 +545,33 @@ func (s *Session) Send(ctx context.Context, p Prompt) (Delivery, error) {
 	return s.out.Send(ctx, ops, p)
 }
 
+// RunOnce sends text as a one-shot job prompt. A failed send kills the process
+// tree. With closeStdin, a good send closes the child stdin. An empty text does
+// nothing.
+func (s *Session) RunOnce(ctx context.Context, text string, closeStdin bool) error {
+	if text == "" {
+		return nil
+	}
+	if err := s.Prompt(ctx, Prompt{Text: text, Kind: "job"}); err != nil {
+		_ = s.KillTree()
+		return err
+	}
+	if closeStdin && s.proc != nil {
+		_ = s.proc.CloseStdin()
+	}
+	return nil
+}
+
+// Steer adds input to the running turn. It returns ErrUnsupported when the
+// adapter cannot steer.
+func (s *Session) Steer(ctx context.Context, p Prompt) error {
+	st, ok := s.adapter.(SteerAdapter)
+	if !ok {
+		return ErrUnsupported
+	}
+	return st.Steer(ctx, p)
+}
+
 func (s *Session) active() bool {
 	ts, ok := s.adapter.(TurnStater)
 	return ok && ts.TurnActive()

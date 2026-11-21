@@ -204,3 +204,56 @@ func TestHandshakeFailureKillsChild(t *testing.T) {
 		t.Fatalf("child pid %d is still alive after a handshake failure", p.PID())
 	}
 }
+
+// failAdapter cannot encode a prompt.
+type failAdapter struct{ testAdapter }
+
+func (failAdapter) EncodePrompt(Prompt) ([]byte, error) { return nil, errors.New("encode failed") }
+
+func TestRunOnce(t *testing.T) {
+	ctx := context.Background()
+	t.Run("closes stdin", func(t *testing.T) {
+		s, err := Start(ctx, "test", startSh(t, "cat"), &testAdapter{}, Config{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.RunOnce(ctx, "x", true); err != nil {
+			t.Fatalf("RunOnce: %v", err)
+		}
+		waitDone(t, s)
+		var sawExit bool
+		for _, e := range collect(t, s) {
+			sawExit = sawExit || e.Type == EventExit
+		}
+		if !sawExit {
+			t.Fatal("no exit event")
+		}
+	})
+	t.Run("empty text", func(t *testing.T) {
+		s, err := Start(ctx, "test", startSh(t, "cat"), &testAdapter{}, Config{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.RunOnce(ctx, "", true); err != nil {
+			t.Fatalf("RunOnce: %v", err)
+		}
+		select {
+		case <-s.Done():
+			t.Fatal("empty RunOnce closed stdin")
+		case <-time.After(200 * time.Millisecond):
+		}
+		_ = s.Close(ctx)
+		collect(t, s)
+	})
+	t.Run("write error kills the tree", func(t *testing.T) {
+		s, err := Start(ctx, "test", startSh(t, "sleep 30"), &failAdapter{}, Config{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.RunOnce(ctx, "x", true); err == nil {
+			t.Fatal("RunOnce returned nil")
+		}
+		waitDone(t, s)
+		collect(t, s)
+	})
+}

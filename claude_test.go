@@ -1143,3 +1143,28 @@ func TestClaudeResultText(t *testing.T) {
 		})
 	}
 }
+
+// A repeated control_response for one id must not block the read loop.
+func TestClaudeDuplicateControlReply(t *testing.T) {
+	proto := newClaudeProtocol(cpTestRuntime(t), PermissionPolicy{})
+	ch, err := proto.replies.Expect("r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"r1","response":{}}}`)
+	done := make(chan struct{})
+	go func() {
+		for range 3 {
+			proto.Parse(frame)
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Parse blocked on a duplicate reply")
+	}
+	if r := <-ch; r.err != nil {
+		t.Fatalf("reply err = %v", r.err)
+	}
+}

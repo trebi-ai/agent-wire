@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/trebi-ai/agent-wire/internal/proc"
+	"github.com/trebi-ai/agent-wire/internal/waiter"
 	"github.com/trebi-ai/agent-wire/internal/wire"
 )
 
@@ -54,25 +54,16 @@ func (d claudeDriver) start(ctx context.Context, req StartRequest, resume bool) 
 	if !hasFlag(args, "--permission-prompt-tool") {
 		args = append(args, "--permission-prompt-tool", "stdio")
 	}
-	p, err := proc.Start(ctx, proc.Opts{
-		Path: l.bin, Args: args, Dir: req.WorkingDir,
-		Env: proc.ChildEnv(l.env), OnStderr: d.rt.stderrHook(Claude, req.OnStderr),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("claude: %w", err)
-	}
 	proto := newClaudeProtocol(d.rt, req.Permissions)
-	s, err := wire.Start(ctx, string(Claude), p, proto, d.rt.wireConfig(req))
+	s, err := d.rt.startWire(ctx, Claude, l, req, args, proto)
 	if err != nil {
-		return nil, fmt.Errorf("claude: %w", err)
+		return nil, err
 	}
-	d.rt.bindSession(s, l)
 	if req.SessionID != "" {
 		s.SetID(req.SessionID)
 	}
-	if req.OneShot && req.OneShotPrompt != "" {
-		if err := s.Prompt(ctx, Prompt{Text: req.OneShotPrompt, Kind: "job"}); err != nil {
-			_ = s.KillTree()
+	if req.OneShot {
+		if err := s.RunOnce(ctx, req.OneShotPrompt, false); err != nil {
 			return nil, fmt.Errorf("claude: write prompt: %w", err)
 		}
 	}
@@ -94,9 +85,6 @@ func (s *claudeSession) SetModel(ctx context.Context, model string) error {
 	_, err := s.p.control(ctx, map[string]any{"subtype": "set_model", "model": model})
 	return err
 }
-
-// Steer adds input to the running turn.
-func (s *claudeSession) Steer(ctx context.Context, pr Prompt) error { return s.p.Steer(ctx, pr) }
 
 // claudeAliases are the model aliases the Claude Code docs list. The lister
 // returns them when the initialize reply has no model list.
@@ -188,8 +176,8 @@ type claudeProtocol struct {
 	turnActive bool
 	// costTotal is the last total_cost_usd. It counts all turns of the process.
 	costTotal float64
-	// replies maps a control request id this side sent to its waiter.
-	replies map[string]chan claudeReply
+	// replies holds the waiters of the control requests this side sent.
+	replies waiter.Table[claudeReply]
 	// initID is the id of the initialize request; its reply carries models.
 	initID string
 	models []ModelInfo
@@ -207,7 +195,6 @@ func newClaudeProtocol(rt *Runtime, policy PermissionPolicy) *claudeProtocol {
 		policy:  policy.Normalized(),
 		pending: map[string]json.RawMessage{},
 		tools:   map[string]string{},
-		replies: map[string]chan claudeReply{},
 	}
 }
 
@@ -253,16 +240,14 @@ func (p *claudeProtocol) sessionModels() []ModelInfo {
 // error subtype becomes a Go error.
 func (p *claudeProtocol) control(ctx context.Context, request map[string]any) (map[string]any, error) {
 	id := p.rt.requestID()
-	ch := make(chan claudeReply, 1)
+	ch, err := p.replies.Expect(id)
+	if err != nil {
+		return nil, err
+	}
+	defer p.replies.Forget(id)
 	p.mu.Lock()
-	p.replies[id] = ch
 	w := p.w
 	p.mu.Unlock()
-	defer func() {
-		p.mu.Lock()
-		delete(p.replies, id)
-		p.mu.Unlock()
-	}()
 	if w == nil {
 		return nil, fmt.Errorf("claude: not connected")
 	}
@@ -303,11 +288,8 @@ func (p *claudeProtocol) parseControlResponse(m map[string]any) {
 	if id != "" && id == p.initID && r.err == nil {
 		p.models = claudeModels(r.response)
 	}
-	ch := p.replies[id]
 	p.mu.Unlock()
-	if ch != nil {
-		ch <- r
-	}
+	p.replies.Deliver(id, r)
 }
 
 // claudeModels maps the models of an initialize reply. The Agent SDK reads the
@@ -799,8 +781,7 @@ func (p *claudeProtocol) parseRateLimit(m map[string]any) []Event {
 		if text == "" {
 			text = "claude rate limit rejected"
 		}
-		c := ClassifyFor(Claude, text, 0)
-		out = append(out, Event{Type: EventError, Error: text, Code: c.Code, EndReason: string(c.Class)})
+		out = append(out, ClassifyFor(Claude, text, 0).errorEvent(text))
 	}
 	if len(out) == 0 {
 		out = append(out, Event{Type: EventStatus, Status: StatusRunning, Text: "rate_limit:" + status})
@@ -922,16 +903,8 @@ func (p *claudeProtocol) Exit(code int, err error, stderr string) []Event {
 	if saw {
 		return out
 	}
-	text := strings.TrimSpace(stderr)
-	if text == "" {
-		if err != nil {
-			text = err.Error()
-		} else {
-			text = fmt.Sprintf("claude exited with code %d before a result", code)
-		}
-	}
-	c := ClassifyFor(Claude, text, 0)
-	return append(out, Event{Type: EventError, Error: text, Code: c.Code, EndReason: string(c.Class)})
+	text := exitText(stderr, err, fmt.Sprintf("claude exited with code %d before a result", code))
+	return append(out, ClassifyFor(Claude, text, 0).errorEvent(text))
 }
 
 func contentBlocks(v any) []map[string]any {

@@ -67,6 +67,8 @@ type openCodeBase struct {
 	harness Harness
 	// interrupt aborts the current turn on this wire.
 	interrupt func(context.Context) error
+	// prompt starts a turn on this wire.
+	prompt func(context.Context, Prompt) error
 
 	events   chan Event
 	done     chan struct{}
@@ -359,10 +361,10 @@ func (b *openCodeBase) turnBusy() bool {
 	return b.busy
 }
 
-// sendWith delivers p with the shared Send rules. OpenCode has no steer, so a
-// prompt during a turn waits for the turn to end.
-func (b *openCodeBase) sendWith(ctx context.Context, prompt func(context.Context, Prompt) error, p Prompt) (Delivery, error) {
-	return b.out.Send(ctx, wire.SendOps{Active: b.turnBusy, Prompt: prompt}, p)
+// Send prompts, or holds p until the running turn ends. OpenCode has no
+// steer.
+func (b *openCodeBase) Send(ctx context.Context, p Prompt) (Delivery, error) {
+	return b.out.Send(ctx, wire.SendOps{Active: b.turnBusy, Prompt: b.prompt}, p)
 }
 
 // afterTurn sends the held prompts once the turn ended. It runs off the
@@ -392,8 +394,7 @@ func (b *openCodeBase) serverGone(reason string) {
 	b.lastError = firstNonEmpty(b.lastError, reason)
 	b.queueMu.Unlock()
 	if !saw {
-		c := ClassifyFor(b.harness, reason, 0)
-		b.deliver([]Event{{Type: EventError, Error: reason, Code: c.Code, EndReason: string(c.Class)}})
+		b.deliver([]Event{ClassifyFor(b.harness, reason, 0).errorEvent(reason)})
 	}
 	code := -1
 	b.finish(&code, "server_exited")
@@ -511,9 +512,10 @@ func (d openCodeDriver) start(ctx context.Context, req StartRequest, resume bool
 		partOwner: map[string]string{},
 	}
 	s.interrupt = s.Interrupt
+	s.prompt = s.Prompt
 	srv.subscribe(s)
 	go s.pump()
-	d.rt.bindSession(s, l)
+	l.attach(s)
 	return s, nil
 }
 
@@ -542,11 +544,6 @@ type openCodeBlock struct {
 	id   string
 	typ  EventType
 	text string
-}
-
-// Send prompts, or holds p until the running turn ends.
-func (s *openCodeSession) Send(ctx context.Context, p Prompt) (Delivery, error) {
-	return s.sendWith(ctx, s.Prompt, p)
 }
 
 // Prompt starts a turn without waiting: prompt_async answers 204 and the turn
@@ -669,8 +666,7 @@ func (s *openCodeSession) parse(typ string, props map[string]any) []Event {
 		s.sawResult = true
 		s.lastError = text
 		s.queueMu.Unlock()
-		c := ClassifyFor(OpenCode, text, 0)
-		return []Event{{Type: EventError, Error: text, Code: c.Code, EndReason: string(c.Class)}}
+		return []Event{ClassifyFor(OpenCode, text, 0).errorEvent(text)}
 	case "session.deleted":
 		// The session is gone on the server. The consumer still gets a code
 		// and a reason instead of a bare channel close.

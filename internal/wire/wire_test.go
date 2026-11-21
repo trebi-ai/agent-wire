@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -382,5 +383,31 @@ func TestReadFrameLongLine(t *testing.T) {
 	got, err := s.readFrame(bufio.NewReaderSize(bytes.NewReader(line), 64<<10))
 	if err != nil || !bytes.Equal(got, line) {
 		t.Fatalf("len = %d, err = %v", len(got), err)
+	}
+}
+
+// steerAdapter adds Steer to testAdapter.
+type steerAdapter struct {
+	testAdapter
+	got []string
+}
+
+func (a *steerAdapter) Steer(_ context.Context, p Prompt) error {
+	a.got = append(a.got, p.Text)
+	return nil
+}
+
+func TestSessionSteer(t *testing.T) {
+	ad := &steerAdapter{}
+	s := NewMemorySession("test", ad, io.Discard, strings.NewReader(""), context.Background(), Config{})
+	if err := s.Steer(context.Background(), Prompt{Text: "go"}); err != nil {
+		t.Fatalf("Steer: %v", err)
+	}
+	if len(ad.got) != 1 || ad.got[0] != "go" {
+		t.Fatalf("adapter got %v", ad.got)
+	}
+	plain := NewMemorySession("test", &testAdapter{}, io.Discard, strings.NewReader(""), context.Background(), Config{})
+	if err := plain.Steer(context.Background(), Prompt{Text: "go"}); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("Steer without support = %v, want ErrUnsupported", err)
 	}
 }

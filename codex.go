@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/trebi-ai/agent-wire/internal/jsonrpc"
-	"github.com/trebi-ai/agent-wire/internal/proc"
 	"github.com/trebi-ai/agent-wire/internal/wire"
 )
 
@@ -52,28 +51,18 @@ func (d codexDriver) start(ctx context.Context, req StartRequest, resume bool) (
 	}
 	proto := newCodexProtocol(d.rt, req, l)
 	args := append(append([]string{}, l.args...), "app-server")
-	p, err := proc.Start(ctx, proc.Opts{
-		Path: l.bin, Args: args, Dir: req.WorkingDir,
-		Env: proc.ChildEnv(l.env), OnStderr: d.rt.stderrHook(Codex, req.OnStderr),
-	})
+	s, err := d.rt.startWire(ctx, Codex, l, req, args, proto)
 	if err != nil {
-		return nil, fmt.Errorf("codex: %w", err)
+		return nil, err
 	}
-	s, err := wire.Start(ctx, string(Codex), p, proto, d.rt.wireConfig(req))
-	if err != nil {
-		return nil, fmt.Errorf("codex: %w", err)
-	}
-	d.rt.bindSession(s, l)
 	s.OnClose(proto.Cleanup)
 	if proto.threadID != "" {
 		s.SetID(proto.threadID)
 	}
-	if req.OneShot && req.OneShotPrompt != "" {
-		if err := s.Prompt(ctx, Prompt{Text: req.OneShotPrompt, Kind: "job"}); err != nil {
-			_ = s.KillTree()
+	if req.OneShot {
+		if err := s.RunOnce(ctx, req.OneShotPrompt, true); err != nil {
 			return nil, fmt.Errorf("codex: write prompt: %w", err)
 		}
-		_ = p.CloseStdin()
 	}
 	return &codexSession{Session: s, p: proto}, nil
 }
@@ -92,9 +81,6 @@ func (s *codexSession) SetModel(_ context.Context, model string) error {
 	s.p.mu.Unlock()
 	return nil
 }
-
-// Steer sends turn/steer for the running turn.
-func (s *codexSession) Steer(ctx context.Context, pr Prompt) error { return s.p.Steer(ctx, pr) }
 
 // Models implements ModelLister. It starts `codex app-server`, reads every
 // page of model/list, and kills the child. Hidden models are left out.
@@ -648,8 +634,7 @@ func (p *codexProtocol) Parse(line []byte) []Event {
 		if text == "" {
 			text = "codex reported an error"
 		}
-		c := ClassifyFor(Codex, text, 0)
-		return []Event{{Type: EventError, Error: text, Code: c.Code, EndReason: string(c.Class)}}
+		return []Event{ClassifyFor(Codex, text, 0).errorEvent(text)}
 	}
 	return nil
 }
@@ -871,16 +856,8 @@ func (p *codexProtocol) Exit(code int, err error, stderr string) []Event {
 	if saw {
 		return nil
 	}
-	text := strings.TrimSpace(stderr)
-	if text == "" {
-		if err != nil {
-			text = err.Error()
-		} else {
-			text = fmt.Sprintf("codex exited with code %d before turn/completed", code)
-		}
-	}
-	c := ClassifyFor(Codex, text, 0)
-	return []Event{{Type: EventError, Error: text, Code: c.Code, EndReason: string(c.Class)}}
+	text := exitText(stderr, err, fmt.Sprintf("codex exited with code %d before turn/completed", code))
+	return []Event{ClassifyFor(Codex, text, 0).errorEvent(text)}
 }
 
 // inputItems renders a prompt as app-server input items. Images go first as

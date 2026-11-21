@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/trebi-ai/agent-wire/internal/waiter"
 )
 
 // Version is the JSON-RPC protocol version every frame carries.
@@ -184,13 +186,12 @@ type Client struct {
 
 	mu      sync.Mutex
 	next    int64
-	waiters map[string]chan Message
-	dead    error
+	waiters waiter.Table[Message]
 }
 
 // New builds a client that writes frames with write.
 func New(write func([]byte) error, timeout time.Duration) *Client {
-	return &Client{write: write, timeout: timeout, waiters: map[string]chan Message{}}
+	return &Client{write: write, timeout: timeout}
 }
 
 // SetWrite replaces the frame writer (the child's stdin arrives after the
@@ -210,45 +211,25 @@ func (c *Client) NextID() ID {
 }
 
 // Pending is the number of unanswered requests.
-func (c *Client) Pending() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return len(c.waiters)
-}
+func (c *Client) Pending() int { return c.waiters.Len() }
 
 // Dead returns the transport failure, if any.
-func (c *Client) Dead() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.dead
-}
+func (c *Client) Dead() error { return c.waiters.Err() }
 
 // Fail marks the transport dead and releases every waiter. It is idempotent.
 func (c *Client) Fail(err error) {
 	if err == nil {
 		err = ErrTransportClosed
 	}
-	c.mu.Lock()
-	if c.dead != nil {
-		c.mu.Unlock()
-		return
-	}
-	c.dead = err
-	waiters := c.waiters
-	c.waiters = map[string]chan Message{}
-	c.mu.Unlock()
-	for _, ch := range waiters {
-		close(ch)
-	}
+	c.waiters.Close(err)
 }
 
 // send writes one frame. It reports ErrTransportClosed after Fail.
 func (c *Client) send(frame map[string]any) error {
 	c.mu.Lock()
 	write := c.write
-	dead := c.dead
 	c.mu.Unlock()
-	if dead != nil {
+	if dead := c.waiters.Err(); dead != nil {
 		return dead
 	}
 	if write == nil {
@@ -376,24 +357,10 @@ func (c *Client) ReplyError(id ID, code int, message string) error {
 }
 
 // expect registers a waiter for id.
-func (c *Client) expect(id ID) (chan Message, error) {
-	key := id.key()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.dead != nil {
-		return nil, c.dead
-	}
-	ch := make(chan Message, 1)
-	c.waiters[key] = ch
-	return ch, nil
-}
+func (c *Client) expect(id ID) (<-chan Message, error) { return c.waiters.Expect(id.key()) }
 
 // forget drops a waiter. The channel stays valid for a racing delivery.
-func (c *Client) forget(id ID) {
-	c.mu.Lock()
-	delete(c.waiters, id.key())
-	c.mu.Unlock()
-}
+func (c *Client) forget(id ID) { c.waiters.Forget(id.key()) }
 
 // Handle decodes one incoming frame and routes it. A response is delivered to
 // its waiter; an unknown or already-abandoned id is ignored.
@@ -412,16 +379,7 @@ func (c *Client) Handle(line []byte) (Kind, Message) {
 	if m.ID.IsZero() {
 		return KindUnknown, m
 	}
-	key := m.ID.key()
-	c.mu.Lock()
-	ch, ok := c.waiters[key]
-	if ok {
-		delete(c.waiters, key)
-	}
-	c.mu.Unlock()
-	if ok {
-		ch <- m
-	}
+	c.waiters.Deliver(m.ID.key(), m)
 	return KindResponse, m
 }
 

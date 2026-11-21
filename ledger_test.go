@@ -226,9 +226,8 @@ func TestLedgerRuntimeReconcileWithoutLedger(t *testing.T) {
 // session lands in the ledger under harness:pid, and closing it drops the row
 // through the OnClose hook that track registers.
 //
-// The standalone FakeDriver does not call the runtime's private bindSession,
-// so a caller wires a fake session into the ledger with track. A built-in
-// driver does it itself.
+// The standalone FakeDriver does not track its sessions, so a caller wires a
+// fake session into the ledger with track. A built-in driver does it itself.
 func TestLedgerRuntimeTrackAndSessionClose(t *testing.T) {
 	rtTestSkipWithoutShell(t)
 	path := rtTestLedgerPath(t)

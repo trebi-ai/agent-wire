@@ -199,6 +199,7 @@ func (oc *oc2TestOpenCode) session(id, directory, instructions string, policy Pe
 		instructions: instructions, policy: policy.Normalized(),
 		text: map[string]int{}, ended: map[string]bool{}, tools: map[string]string{},
 	}
+	s.prompt = s.Prompt
 	oc.route.subscribe(s)
 	oc.route.ensureStream(directory)
 	go s.pump()

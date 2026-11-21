@@ -1,6 +1,7 @@
 package agentwire
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -144,5 +145,32 @@ func TestClassifyResultSubtypeAndLimit(t *testing.T) {
 	}
 	if got.Code != "credits_exhausted" {
 		t.Fatalf("credit result code = %q, want credits_exhausted", got.Code)
+	}
+}
+
+func TestErrorEvent(t *testing.T) {
+	t.Parallel()
+	e := ClassifyFor(Claude, "invalid api key", 0).errorEvent("invalid api key")
+	if e.Type != EventError || e.Error != "invalid api key" || e.Code != "claude.invalid_credentials" || e.EndReason != "auth" {
+		t.Fatalf("event = %+v", e)
+	}
+}
+
+func TestExitText(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		stderr string
+		err    error
+		want   string
+	}{
+		{"stderr", " x \n", errors.New("boom"), "x"},
+		{"error", " ", errors.New("boom"), "boom"},
+		{"fallback", "", nil, "fb"},
+	}
+	for _, tc := range cases {
+		if got := exitText(tc.stderr, tc.err, "fb"); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }

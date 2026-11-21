@@ -148,10 +148,11 @@ func (d openCode2Driver) open(ctx context.Context, req StartRequest, l *launch) 
 		tools:        map[string]string{},
 	}
 	s.interrupt = s.Interrupt
+	s.prompt = s.Prompt
 	srv.subscribe(s)
 	s.markLive()
 	go s.pump()
-	d.rt.bindSession(s, l)
+	l.attach(s)
 	// The session instructions are a per-session entry on V2, so they are sent
 	// once the session exists. A resume re-sends them, which is idempotent.
 	if err := s.setInstructions(ctx); err != nil {
@@ -185,11 +186,6 @@ type openCode2Session struct {
 	// tools remembers the name of each tool call. V2 sends the name once, when
 	// the call starts.
 	tools map[string]string
-}
-
-// Send prompts, or holds p until the running turn ends.
-func (s *openCode2Session) Send(ctx context.Context, p Prompt) (Delivery, error) {
-	return s.sendWith(ctx, s.Prompt, p)
 }
 
 // Prompt starts a turn without waiting: the prompt route answers with the
@@ -447,13 +443,13 @@ func (s *openCode2Session) parse(typ string, data map[string]any) []Event {
 		s.queueMu.Unlock()
 		if typ == "session.execution.failed" {
 			s.afterTurn(s.Prompt)
-			return append([]Event{{Type: EventError, Error: text, Code: c.Code, EndReason: string(c.Class)}},
+			return append([]Event{c.errorEvent(text)},
 				s.turnResult(&Result{
 					Subtype: "error_during_execution", IsError: true, Text: text,
 					EndReason: string(c.Class), Code: c.Code,
 				})...)
 		}
-		return []Event{{Type: EventError, Error: text, Code: c.Code, EndReason: string(c.Class)}}
+		return []Event{c.errorEvent(text)}
 	case "permission.asked":
 		return s.parsePermission(data)
 	}

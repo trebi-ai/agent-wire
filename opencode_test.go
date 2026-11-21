@@ -178,6 +178,7 @@ func (oc *coaTestOpenCode) session(id, directory, instructions, model, variant s
 		policy: policy.Normalized(), first: true,
 		parts: map[string]int{}, done: map[string]bool{}, roles: map[string]string{}, partOwner: map[string]string{},
 	}
+	s.prompt = s.Prompt
 	oc.route.subscribe(s)
 	oc.route.ensureStream(directory)
 	go s.pump()

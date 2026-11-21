@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/trebi-ai/agent-wire/internal/jsonrpc"
-	"github.com/trebi-ai/agent-wire/internal/proc"
 	"github.com/trebi-ai/agent-wire/internal/wire"
 )
 
@@ -107,27 +106,17 @@ func (d acpDriver) start(ctx context.Context, req StartRequest, resume bool) (Se
 		return nil, err
 	}
 	proto := newACPProtocol(d.rt, d.kind, req, l, fresh, resume)
-	p, err := proc.Start(ctx, proc.Opts{
-		Path: l.bin, Args: args, Dir: req.WorkingDir,
-		Env: proc.ChildEnv(l.env), OnStderr: d.rt.stderrHook(d.kind.harness(), req.OnStderr),
-	})
+	s, err := d.rt.startWire(ctx, d.kind.harness(), l, req, args, proto)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", d.kind, err)
+		return nil, err
 	}
-	s, err := wire.Start(ctx, string(d.kind.harness()), p, proto, d.rt.wireConfig(req))
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", d.kind, err)
-	}
-	d.rt.bindSession(s, l)
 	if id := proto.currentSession(); id != "" {
 		s.SetID(id)
 	}
-	if req.OneShot && req.OneShotPrompt != "" {
-		if err := s.Prompt(ctx, Prompt{Text: req.OneShotPrompt, Kind: "job"}); err != nil {
-			_ = s.KillTree()
+	if req.OneShot {
+		if err := s.RunOnce(ctx, req.OneShotPrompt, true); err != nil {
 			return nil, err
 		}
-		_ = p.CloseStdin()
 	}
 	return &acpSession{Session: s, p: proto}, nil
 }
@@ -152,13 +141,6 @@ func (s *acpSession) SetModel(ctx context.Context, model string) error {
 		return fmt.Errorf("%w: %s offered no models", ErrUnsupported, s.p.kind)
 	}
 	return s.p.applyModel(ctx, model)
-}
-
-// Steer sends input into the running turn. The ACP wire carries steering as a
-// protocol extension; an agent without it answers with a plain message, which
-// becomes ErrUnsupported.
-func (s *acpSession) Steer(ctx context.Context, pr Prompt) error {
-	return s.p.Steer(ctx, pr)
 }
 
 // Models implements ModelLister. It opens a session with no MCP servers,
@@ -1341,8 +1323,7 @@ func (p *acpProtocol) parseResponse(msg jsonrpc.Message) []Event {
 	out := p.flushText()
 	if msg.Err != nil {
 		text := msg.Err.Error()
-		c := ClassifyFor(p.kind.harness(), text, 0)
-		return append(out, Event{Type: EventError, Error: text, Code: c.Code, EndReason: string(c.Class)})
+		return append(out, ClassifyFor(p.kind.harness(), text, 0).errorEvent(text))
 	}
 	var res struct {
 		StopReason string `json:"stopReason"`
@@ -1526,16 +1507,8 @@ func (p *acpProtocol) Exit(code int, err error, stderr string) []Event {
 	if saw {
 		return out
 	}
-	text := strings.TrimSpace(stderr)
-	if text == "" {
-		if err != nil {
-			text = err.Error()
-		} else {
-			text = fmt.Sprintf("%s exited with code %d before the turn ended", p.kind, code)
-		}
-	}
-	c := ClassifyFor(p.kind.harness(), text, 0)
-	return append(out, Event{Type: EventError, Error: text, Code: c.Code, EndReason: string(c.Class)})
+	text := exitText(stderr, err, fmt.Sprintf("%s exited with code %d before the turn ended", p.kind, code))
+	return append(out, ClassifyFor(p.kind.harness(), text, 0).errorEvent(text))
 }
 
 // acpSessionID reads the sessionId out of a session-open response.

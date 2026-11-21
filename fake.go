@@ -108,12 +108,10 @@ func (f FakeDriver) start(ctx context.Context, req StartRequest) (Session, error
 	if req.SessionID != "" {
 		s.SetID(req.SessionID)
 	}
-	if req.OneShot && req.OneShotPrompt != "" {
-		if err := s.Prompt(ctx, Prompt{Text: req.OneShotPrompt, Kind: "job"}); err != nil {
-			_ = s.KillTree()
+	if req.OneShot {
+		if err := s.RunOnce(ctx, req.OneShotPrompt, true); err != nil {
 			return nil, err
 		}
-		_ = p.CloseStdin()
 	}
 	return &fakeSession{Session: s, p: proto}, nil
 }
@@ -132,9 +130,6 @@ func (s *fakeSession) SetModel(_ context.Context, model string) error {
 	}
 	return s.WriteFrame(frame)
 }
-
-// Steer writes a steer line to the script while a turn runs.
-func (s *fakeSession) Steer(ctx context.Context, pr Prompt) error { return s.p.Steer(ctx, pr) }
 
 // fakeProtocol parses the fake NDJSON vocabulary.
 type fakeProtocol struct {

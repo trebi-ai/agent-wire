@@ -1,8 +1,11 @@
 package agentwire
 
 import (
+	"context"
 	"encoding/base64"
+	"fmt"
 
+	"github.com/trebi-ai/agent-wire/internal/proc"
 	"github.com/trebi-ai/agent-wire/internal/wire"
 )
 
@@ -28,13 +31,22 @@ func (rt *Runtime) stderrHook(h Harness, perRequest func(Harness, string)) func(
 	}
 }
 
-// bindSession attaches the launch cleanup to a freshly started session. The
-// runtime tracks the session itself, so a session from a consumer-supplied
-// Driver reaches the crash ledger too.
-func (rt *Runtime) bindSession(s Session, l *launch) {
-	if l != nil {
-		l.attach(s)
+// startWire starts the vendor process and its wire session, and attaches the
+// launch cleanup.
+func (rt *Runtime) startWire(ctx context.Context, h Harness, l *launch, req StartRequest, args []string, adapter wire.Adapter) (*wire.Session, error) {
+	p, err := proc.Start(ctx, proc.Opts{
+		Path: l.bin, Args: args, Dir: req.WorkingDir,
+		Env: proc.ChildEnv(l.env), OnStderr: rt.stderrHook(h, req.OnStderr),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", h, err)
 	}
+	s, err := wire.Start(ctx, string(h), p, adapter, rt.wireConfig(req))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", h, err)
+	}
+	l.attach(s)
+	return s, nil
 }
 
 // encodeBase64 renders attachment bytes for a JSON content block.

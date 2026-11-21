@@ -21,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - An OpenCode session open fails when the event stream does not connect. Before, the session could lose its first events.
+- A repeated reply with one request id no longer blocks the read loop of a Claude or pi session. The driver drops it.
 
 ### Removed
 

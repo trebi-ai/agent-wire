@@ -2,6 +2,7 @@ package agentwire
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/trebi-ai/agent-wire/internal/proc"
+	"github.com/trebi-ai/agent-wire/internal/waiter"
 	"github.com/trebi-ai/agent-wire/internal/wire"
 )
 
@@ -36,28 +37,18 @@ func (d piDriver) start(ctx context.Context, req StartRequest, resume bool) (Ses
 	if !hasFlag(args, "--mode") && !hasFlag(args, "--rpc") {
 		args = append(args, "--mode", "rpc")
 	}
-	p, err := proc.Start(ctx, proc.Opts{
-		Path: l.bin, Args: args, Dir: req.WorkingDir,
-		Env: proc.ChildEnv(l.env), OnStderr: d.rt.stderrHook(Pi, req.OnStderr),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("pi: %w", err)
-	}
 	proto := newPiProtocol(req.Permissions, l.instructions)
-	s, err := wire.Start(ctx, string(Pi), p, proto, d.rt.wireConfig(req))
+	s, err := d.rt.startWire(ctx, Pi, l, req, args, proto)
 	if err != nil {
-		return nil, fmt.Errorf("pi: %w", err)
+		return nil, err
 	}
-	d.rt.bindSession(s, l)
 	if req.SessionID != "" {
 		s.SetID(req.SessionID)
 	}
-	if req.OneShot && req.OneShotPrompt != "" {
-		if err := s.Prompt(ctx, Prompt{Text: req.OneShotPrompt, Kind: "job"}); err != nil {
-			_ = s.KillTree()
+	if req.OneShot {
+		if err := s.RunOnce(ctx, req.OneShotPrompt, true); err != nil {
 			return nil, err
 		}
-		_ = p.CloseStdin()
 	}
 	return &piSession{Session: s, p: proto}, nil
 }
@@ -77,9 +68,6 @@ func (s *piSession) SetModel(ctx context.Context, model string) error {
 	_, err := s.p.request(ctx, map[string]any{"type": "set_model", "provider": provider, "modelId": id})
 	return err
 }
-
-// Steer adds input to the running turn.
-func (s *piSession) Steer(ctx context.Context, pr Prompt) error { return s.p.Steer(ctx, pr) }
 
 // Steer sends the steer command. Pi delivers the message after the running
 // tool calls and before the next model call.
@@ -204,7 +192,7 @@ type piProtocol struct {
 
 	// nextID and replies correlate command responses by id.
 	nextID  int
-	replies map[string]chan piReply
+	replies waiter.Table[piReply]
 }
 
 // piReply is one command response.
@@ -218,7 +206,6 @@ func newPiProtocol(policy PermissionPolicy, instructions string) *piProtocol {
 		policy:       policy.Normalized(),
 		instructions: instructions,
 		firstPrompt:  strings.TrimSpace(instructions) != "",
-		replies:      map[string]chan piReply{},
 	}
 }
 
@@ -247,14 +234,12 @@ func (p *piProtocol) request(ctx context.Context, cmd map[string]any) (json.RawM
 	w := p.w
 	p.nextID++
 	id := "aw-" + strconv.Itoa(p.nextID)
-	ch := make(chan piReply, 1)
-	p.replies[id] = ch
 	p.mu.Unlock()
-	defer func() {
-		p.mu.Lock()
-		delete(p.replies, id)
-		p.mu.Unlock()
-	}()
+	ch, err := p.replies.Expect(id)
+	if err != nil {
+		return nil, err
+	}
+	defer p.replies.Forget(id)
 	if w == nil {
 		return nil, fmt.Errorf("pi %s: no writer", cmd["type"])
 	}
@@ -281,12 +266,6 @@ func (p *piProtocol) request(ctx context.Context, cmd map[string]any) (json.RawM
 // parseResponse delivers a command response to its waiter.
 func (p *piProtocol) parseResponse(m map[string]any, line []byte) {
 	id := str(m["id"])
-	p.mu.Lock()
-	ch := p.replies[id]
-	p.mu.Unlock()
-	if ch == nil {
-		return
-	}
 	var res struct {
 		Command string          `json:"command"`
 		Success bool            `json:"success"`
@@ -301,7 +280,7 @@ func (p *piProtocol) parseResponse(m map[string]any, line []byte) {
 	} else {
 		r.data = res.Data
 	}
-	ch <- r
+	p.replies.Deliver(id, r)
 }
 
 // EncodePrompt sends the prompt command. The instructions ride along on the
@@ -400,8 +379,7 @@ func (p *piProtocol) Parse(line []byte) []Event {
 		p.mu.Lock()
 		p.sawError = msg
 		p.mu.Unlock()
-		c := ClassifyFor(Pi, msg, 0)
-		return []Event{{Type: EventError, Error: msg, Code: c.Code, EndReason: string(c.Class)}}
+		return []Event{ClassifyFor(Pi, msg, 0).errorEvent(msg)}
 	}
 	return nil
 }
@@ -581,18 +559,8 @@ func (p *piProtocol) Exit(code int, err error, stderr string) []Event {
 	if saw {
 		return nil
 	}
-	text := strings.TrimSpace(stderr)
-	if text == "" {
-		text = sawErr
-	}
-	if text == "" && err != nil {
-		text = err.Error()
-	}
-	if text == "" {
-		text = fmt.Sprintf("pi exited with code %d before agent_end", code)
-	}
-	c := ClassifyFor(Pi, text, 0)
-	return []Event{{Type: EventError, Error: text, Code: c.Code, EndReason: string(c.Class)}}
+	text := exitText(cmp.Or(strings.TrimSpace(stderr), sawErr), err, fmt.Sprintf("pi exited with code %d before agent_end", code))
+	return []Event{ClassifyFor(Pi, text, 0).errorEvent(text)}
 }
 
 // ensure the pi types satisfy their interfaces.
