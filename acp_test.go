@@ -1555,3 +1555,14 @@ func TestACPThoughtBlocks(t *testing.T) {
 		t.Fatalf("events:\n got %q\nwant %q", got, want)
 	}
 }
+
+func TestACPKindHarness(t *testing.T) {
+	want := map[acpKind]Harness{
+		acpCopilot: Copilot, acpCursor: Cursor, acpGemini: Gemini, acpOMP: OMP, acpGrok: Grok,
+	}
+	for k, h := range want {
+		if got := k.harness(); got != h {
+			t.Errorf("%s: harness = %q, want %q", k, got, h)
+		}
+	}
+}

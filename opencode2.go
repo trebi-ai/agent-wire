@@ -1,6 +1,7 @@
 package agentwire
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -76,7 +77,7 @@ func (openCode2) errorText(body []byte, status int) string {
 		Error   string `json:"error"`
 	}
 	_ = json.Unmarshal(body, &e)
-	return firstNonEmpty(e.Message, e.Error, e.Tag, fmt.Sprintf("HTTP %d", status))
+	return cmp.Or(e.Message, e.Error, e.Tag, fmt.Sprintf("HTTP %d", status))
 }
 
 // openCode2SessionID finds the session a V2 event belongs to. V2 names it in
@@ -407,7 +408,7 @@ func (s *openCode2Session) parse(typ string, data map[string]any) []Event {
 		}
 		name := s.toolName(id)
 		text, _, _ := openCode2Error(data)
-		return []Event{{Type: EventTool, Tool: s.toolEvent(id, name, "", firstNonEmpty(text, openCode2ToolOutput(data)), "failed")}}
+		return []Event{{Type: EventTool, Tool: s.toolEvent(id, name, "", cmp.Or(text, openCode2ToolOutput(data)), "failed")}}
 	case "session.step.ended":
 		// session.usage.updated is the running total of the session; the
 		// steps of the turn give the turn total.
@@ -473,7 +474,7 @@ func (s *openCode2Session) parsePermission(data map[string]any) []Event {
 		}()
 		return nil
 	}
-	q := firstNonEmpty(str(data["message"]), openCode2PermissionQuestion(action, data))
+	q := cmp.Or(str(data["message"]), openCode2PermissionQuestion(action, data))
 	return []Event{{Type: EventPermission, Permission: &Permission{
 		ID: id, Tool: action, Kind: kind, Question: q,
 	}}}
@@ -553,7 +554,7 @@ func openCode2Error(data map[string]any) (string, int, string) {
 	if err == nil {
 		return openCodeErrorText(data), 0, ""
 	}
-	text := firstNonEmpty(str(err["message"]), str(err["type"]), str(err["name"]))
+	text := cmp.Or(str(err["message"]), str(err["type"]), str(err["name"]))
 	status := int(num(err["status"]))
 	return text, status, str(err["type"])
 }
@@ -618,9 +619,9 @@ func openCode2PermissionQuestion(action string, data map[string]any) string {
 		}
 	}
 	if len(parts) == 0 {
-		return firstNonEmpty(action, "OpenCode requests permission")
+		return cmp.Or(action, "OpenCode requests permission")
 	}
-	return firstNonEmpty(action, "OpenCode requests permission") + ": " + strings.Join(parts, ", ")
+	return cmp.Or(action, "OpenCode requests permission") + ": " + strings.Join(parts, ", ")
 }
 
 // openCode2JSON renders one decoded JSON value back to a string, for the tool
@@ -704,7 +705,7 @@ func (openCode2) models(ctx context.Context, srv *openCodeServer, dir string) ([
 		}
 	}
 	ref := func(m v2Model) string {
-		id := firstNonEmpty(m.ModelID, m.ID)
+		id := cmp.Or(m.ModelID, m.ID)
 		if m.ProviderID == "" {
 			return id
 		}
@@ -713,7 +714,7 @@ func (openCode2) models(ctx context.Context, srv *openCodeServer, dir string) ([
 	var def v2Model
 	_ = srv.call(ctx, "GET", "/model/default"+query, dir, nil, &def)
 	defID := ""
-	if firstNonEmpty(def.ModelID, def.ID) != "" {
+	if cmp.Or(def.ModelID, def.ID) != "" {
 		defID = ref(def)
 	}
 	out := make([]ModelInfo, 0, len(list))
@@ -723,7 +724,7 @@ func (openCode2) models(ctx context.Context, srv *openCodeServer, dir string) ([
 		}
 		id := ref(m)
 		out = append(out, ModelInfo{
-			ID: id, Name: firstNonEmpty(m.Name, m.ModelID, m.ID),
+			ID: id, Name: cmp.Or(m.Name, m.ModelID, m.ID),
 			Description: contextText(m.Limit.Context), Default: id == defID,
 		})
 	}

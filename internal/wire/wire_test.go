@@ -43,7 +43,7 @@ func (a *testAdapter) Handshake(ctx context.Context, w *Writer) ([]Event, error)
 
 // EncodePrompt renders one user turn.
 func (a *testAdapter) EncodePrompt(p Prompt) ([]byte, error) {
-	return jsonLine(map[string]string{"type": "user", "text": p.Text})
+	return JSONLine(map[string]string{"type": "user", "text": p.Text})
 }
 
 // Parse maps one stdout line to events.
@@ -74,7 +74,7 @@ func (a *testAdapter) Parse(line []byte) []Event {
 
 // EncodeDecision answers one permission request.
 func (a *testAdapter) EncodeDecision(id string, d Decision) ([]byte, error) {
-	return jsonLine(map[string]any{"type": "decision", "id": id, "allow": d.Allow})
+	return JSONLine(map[string]any{"type": "decision", "id": id, "allow": d.Allow})
 }
 
 // Exit maps the process exit to events. The wire exit event carries it.
@@ -410,4 +410,14 @@ func TestSessionSteer(t *testing.T) {
 	if err := plain.Steer(context.Background(), Prompt{Text: "go"}); !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("Steer without support = %v, want ErrUnsupported", err)
 	}
+}
+
+func TestCloseWithoutProcess(t *testing.T) {
+	s := NewMemorySession("test", &testAdapter{}, io.Discard, strings.NewReader(""), context.Background(), Config{})
+	for range 2 {
+		if err := s.Close(context.Background()); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	}
+	collect(t, s)
 }

@@ -90,9 +90,6 @@ func (w *Writer) SetSessionID(id string) {
 	}
 }
 
-// Harness is the harness name the session runs.
-func (w *Writer) Harness() string { return w.s.harness }
-
 // Session is one conversation over a child process.
 type Session struct {
 	harness  string
@@ -350,9 +347,6 @@ func procStdin(p *proc.Proc) io.Writer {
 	}
 	return p.Stdin()
 }
-
-// Harness is the session's harness name.
-func (s *Session) Harness() string { return s.harness }
 
 // Provider is the harness name (Session interface).
 func (s *Session) Provider() string { return s.harness }
@@ -654,11 +648,9 @@ func (s *Session) Close(ctx context.Context) error {
 	s.closeOnce.Do(func() {
 		if s.proc != nil {
 			s.closeErr = s.proc.GracefulClose(proc.GracefulCloseTimeout)
-			// Unblock a stalled consumer so the framing loop can finish.
-			close(s.closing)
-		} else {
-			close(s.closing)
 		}
+		// Unblock a stalled consumer so the framing loop can finish.
+		close(s.closing)
 	})
 	if ctx == nil {
 		ctx = context.Background()
@@ -833,14 +825,11 @@ func (s *Session) exitEvent(code int, err error, stderr string) {
 	s.emit(ev)
 }
 
-// jsonLine marshals v into one NDJSON frame.
-func jsonLine(v any) ([]byte, error) {
+// JSONLine marshals v into one newline-terminated NDJSON frame.
+func JSONLine(v any) ([]byte, error) {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return nil, fmt.Errorf("encode frame: %w", err)
 	}
 	return append(b, '\n'), nil
 }
-
-// JSONLine marshals v into one newline-terminated NDJSON frame.
-func JSONLine(v any) ([]byte, error) { return jsonLine(v) }

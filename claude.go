@@ -2,6 +2,7 @@ package agentwire
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -280,7 +281,7 @@ func (p *claudeProtocol) parseControlResponse(m map[string]any) {
 	id := str(resp["request_id"])
 	r := claudeReply{}
 	if str(resp["subtype"]) == "error" {
-		r.err = fmt.Errorf("claude: %s", firstNonEmpty(str(resp["error"]), "control request failed"))
+		r.err = fmt.Errorf("claude: %s", cmp.Or(str(resp["error"]), "control request failed"))
 	} else {
 		r.response, _ = resp["response"].(map[string]any)
 	}
@@ -436,7 +437,6 @@ func (p *claudeProtocol) EncodeDecision(id string, d Decision) ([]byte, error) {
 	})
 }
 
-// Parse maps one stdout frame to normalized events.
 // Fragment marks the partial-message frames: content block deltas and the
 // running thinking token count. The complete assistant frame repeats them.
 func (p *claudeProtocol) Fragment(line []byte) bool {
@@ -457,6 +457,7 @@ func (p *claudeProtocol) Fragment(line []byte) bool {
 		(f.Type == "system" && f.Subtype == "thinking_tokens")
 }
 
+// Parse maps one stdout frame to normalized events.
 func (p *claudeProtocol) Parse(line []byte) []Event {
 	trimmed := bytes.TrimSpace(line)
 	if len(trimmed) == 0 {
@@ -733,22 +734,13 @@ func resultFrameText(m map[string]any) string {
 	if f, ok := m["api_error_status"].(float64); ok {
 		status = int(f)
 	}
-	return firstNonEmpty(
+	return cmp.Or(
 		strings.Join(errs, "; "),
 		strings.TrimSpace(str(m["result"])),
 		subtypeText(str(m["subtype"])),
 		statusText(status),
 		"unknown error",
 	)
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 func subtypeText(subtype string) string {
@@ -777,7 +769,7 @@ func (p *claudeProtocol) parseRateLimit(m map[string]any) []Event {
 		out = append(out, Event{Type: EventLimits, Limits: l})
 	}
 	if rejected {
-		text := firstNonEmpty(str(info["message"]), str(m["message"]))
+		text := cmp.Or(str(info["message"]), str(m["message"]))
 		if text == "" {
 			text = "claude rate limit rejected"
 		}
@@ -881,7 +873,7 @@ func (p *claudeProtocol) parseControlRequest(m map[string]any) []Event {
 		}
 		return nil
 	}
-	question := firstNonEmpty(str(request["title"]), str(request["description"]), "Allow "+tool+"?")
+	question := cmp.Or(str(request["title"]), str(request["description"]), "Allow "+tool+"?")
 	if len(raw) > 0 {
 		p.mu.Lock()
 		p.pending[id] = raw

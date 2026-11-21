@@ -1,6 +1,7 @@
 package agentwire
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -391,7 +392,7 @@ func (b *openCodeBase) endTurn() {
 func (b *openCodeBase) serverGone(reason string) {
 	b.queueMu.Lock()
 	saw := b.sawResult
-	b.lastError = firstNonEmpty(b.lastError, reason)
+	b.lastError = cmp.Or(b.lastError, reason)
 	b.queueMu.Unlock()
 	if !saw {
 		b.deliver([]Event{ClassifyFor(b.harness, reason, 0).errorEvent(reason)})
@@ -468,7 +469,7 @@ func (openCodeV1) errorText(body []byte, status int) string {
 		} `json:"data"`
 	}
 	_ = json.Unmarshal(body, &e)
-	return firstNonEmpty(e.Error, e.Data.Message, fmt.Sprintf("HTTP %d", status))
+	return cmp.Or(e.Error, e.Data.Message, fmt.Sprintf("HTTP %d", status))
 }
 
 // openCodeDriver manages sessions on a runtime-owned `opencode serve`.
@@ -692,7 +693,7 @@ func (s *openCodeSession) parse(typ string, props map[string]any) []Event {
 			}()
 			return nil
 		}
-		q := firstNonEmpty(str(props["title"]), str(props["message"]), "OpenCode requests permission")
+		q := cmp.Or(str(props["title"]), str(props["message"]), "OpenCode requests permission")
 		return []Event{{Type: EventPermission, Permission: &Permission{
 			ID: id, Tool: str(props["type"]), Kind: kind, Question: q,
 		}}}
@@ -845,7 +846,7 @@ func (s *openCodeSession) parseToolPart(part map[string]any, id string) []Event 
 		status = "completed"
 	case "error":
 		status = "failed"
-		output = firstNonEmpty(output, openCodeErrorText(state))
+		output = cmp.Or(output, openCodeErrorText(state))
 	}
 	kind := classifyToolName(name)
 	return []Event{{Type: EventTool, Tool: &ToolEvent{
@@ -883,7 +884,7 @@ func openCodeErrorText(v map[string]any) string {
 				return msg
 			}
 		}
-		if msg := firstNonEmpty(str(err["message"]), str(err["name"])); msg != "" {
+		if msg := cmp.Or(str(err["message"]), str(err["name"])); msg != "" {
 			return msg
 		}
 	}
@@ -1057,9 +1058,9 @@ func (openCodeV1) models(ctx context.Context, srv *openCodeServer, dir string) (
 	var out []ModelInfo
 	for _, p := range res.Providers {
 		for key, m := range p.Models {
-			id := p.ID + "/" + firstNonEmpty(m.ID, key)
+			id := p.ID + "/" + cmp.Or(m.ID, key)
 			out = append(out, ModelInfo{
-				ID: id, Name: firstNonEmpty(m.Name, m.ID, key),
+				ID: id, Name: cmp.Or(m.Name, m.ID, key),
 				Description: joinNonEmpty(p.Name, contextText(m.Limit.Context)),
 				Default:     id == def,
 			})

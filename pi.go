@@ -276,7 +276,7 @@ func (p *piProtocol) parseResponse(m map[string]any, line []byte) {
 	if err := json.Unmarshal(line, &res); err != nil {
 		r.err = err
 	} else if !res.Success {
-		r.err = fmt.Errorf("pi %s: %s", res.Command, firstNonEmpty(res.Error, "failed"))
+		r.err = fmt.Errorf("pi %s: %s", res.Command, cmp.Or(res.Error, "failed"))
 	} else {
 		r.data = res.Data
 	}
@@ -372,7 +372,7 @@ func (p *piProtocol) Parse(line []byte) []Event {
 	case "agent_end":
 		return p.parseAgentEnd()
 	case "error":
-		msg := firstNonEmpty(str(m["error"]), str(m["message"]))
+		msg := cmp.Or(str(m["error"]), str(m["message"]))
 		if msg == "" {
 			msg = fmt.Sprint(m["error"])
 		}
@@ -395,7 +395,7 @@ func (p *piProtocol) parseUpdate(m map[string]any) []Event {
 	}
 	switch str(ev["type"]) {
 	case "text_delta", "text":
-		text := firstNonEmpty(str(ev["delta"]), str(ev["text"]))
+		text := cmp.Or(str(ev["delta"]), str(ev["text"]))
 		if text != "" {
 			return []Event{{Type: EventAssistant, Text: text, Delta: str(ev["type"]) == "text_delta"}}
 		}
@@ -435,7 +435,7 @@ func (p *piProtocol) parsePermission(m map[string]any) []Event {
 	}
 	return []Event{{Type: EventPermission, Permission: &Permission{
 		ID: id, Tool: tool, Kind: kind,
-		Question: firstNonEmpty(str(m["message"]), str(m["question"]), "pi requests permission"),
+		Question: cmp.Or(str(m["message"]), str(m["question"]), "pi requests permission"),
 	}}}
 }
 

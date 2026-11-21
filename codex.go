@@ -2,6 +2,7 @@ package agentwire
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -186,7 +187,7 @@ func codexModelPage(raw json.RawMessage) ([]ModelInfo, string, error) {
 	}
 	out := make([]ModelInfo, 0, len(res.Data))
 	for _, m := range res.Data {
-		id := firstNonEmpty(m.Model, m.ID)
+		id := cmp.Or(m.Model, m.ID)
 		if id == "" || m.Hidden {
 			continue
 		}
@@ -556,7 +557,6 @@ func codexDecisionResult(method string, d Decision) map[string]any {
 	return result
 }
 
-// Parse routes responses to the client and maps notifications to events.
 // Fragment marks the delta notifications. item/completed repeats them.
 func (p *codexProtocol) Fragment(line []byte) bool {
 	if !bytes.Contains(line, []byte("elta")) {
@@ -572,6 +572,7 @@ func (p *codexProtocol) Fragment(line []byte) bool {
 	return strings.HasSuffix(f.Method, "/delta") || strings.HasSuffix(f.Method, "Delta") || strings.HasSuffix(f.Method, "_delta")
 }
 
+// Parse routes responses to the client and maps notifications to events.
 func (p *codexProtocol) Parse(line []byte) []Event {
 	kind, msg := p.client.Handle(line)
 	switch kind {
@@ -630,7 +631,7 @@ func (p *codexProtocol) Parse(line []byte) []Event {
 			return []Event{{Type: EventLimits, Limits: l}}
 		}
 	case "error":
-		text := firstNonEmpty(str(params["message"]), fmt.Sprint(params["error"]))
+		text := cmp.Or(str(params["message"]), fmt.Sprint(params["error"]))
 		if text == "" {
 			text = "codex reported an error"
 		}
@@ -759,7 +760,7 @@ func (p *codexProtocol) parseTurnCompleted(params map[string]any) []Event {
 		case string:
 			text = e
 		case map[string]any:
-			text = firstNonEmpty(str(e["message"]), str(e["error"]))
+			text = cmp.Or(str(e["message"]), str(e["error"]))
 		}
 	}
 	if text == "" {
@@ -801,7 +802,7 @@ func (p *codexProtocol) parseItem(method string, params map[string]any) []Event 
 			return []Event{{Type: EventThought, Text: text}}
 		}
 	case "commandExecution":
-		output := firstNonEmpty(str(item["aggregatedOutput"]), str(item["output"]))
+		output := cmp.Or(str(item["aggregatedOutput"]), str(item["output"]))
 		command := str(item["command"])
 		if code := codexExitCode(item["exitCode"]); code != nil && *code != 0 {
 			status = "failed"
@@ -841,7 +842,7 @@ func codexChangePaths(item map[string]any) []string {
 		if !ok {
 			continue
 		}
-		if p := firstNonEmpty(str(m["path"]), str(m["file"])); p != "" {
+		if p := cmp.Or(str(m["path"]), str(m["file"])); p != "" {
 			out = append(out, p)
 		}
 	}

@@ -1,6 +1,7 @@
 package agentwire
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -36,22 +37,9 @@ const (
 	acpGrok    acpKind = "grok"
 )
 
-// harness is the Agentwire harness name of the kind.
-func (k acpKind) harness() Harness {
-	switch k {
-	case acpCopilot:
-		return Copilot
-	case acpCursor:
-		return Cursor
-	case acpGemini:
-		return Gemini
-	case acpOMP:
-		return OMP
-	case acpGrok:
-		return Grok
-	}
-	return Harness(k)
-}
+// harness is the Agentwire harness name of the kind. Each kind is the name of
+// its harness.
+func (k acpKind) harness() Harness { return Harness(k) }
 
 // neverAuthenticate reports a kind whose authenticate method starts a browser
 // or device login. The library never starts one from a session open: the
@@ -1266,8 +1254,8 @@ func (p *acpProtocol) mapUpdate(update map[string]any) []Event {
 
 // toolEvent renders one tool call or tool call update.
 func (p *acpProtocol) toolEvent(update map[string]any, status string) *ToolEvent {
-	name := firstNonEmpty(str(update["title"]), str(update["kind"]), "tool")
-	kind := classifyToolName(firstNonEmpty(str(update["kind"]), name))
+	name := cmp.Or(str(update["title"]), str(update["kind"]), "tool")
+	kind := classifyToolName(cmp.Or(str(update["kind"]), name))
 	input := ""
 	if raw, ok := update["rawInput"]; ok {
 		if b, err := json.Marshal(raw); err == nil {
@@ -1416,8 +1404,8 @@ func (p *acpProtocol) permissionRequest(msg jsonrpc.Message) []Event {
 		options = append(options, acpOption{ID: str(o["optionId"]), Kind: str(o["kind"])})
 	}
 	id := string(msg.ID.Raw())
-	kind := classifyToolName(firstNonEmpty(str(params.ToolCall["kind"]), str(params.ToolCall["title"])))
-	if d, ok := p.policy.Answer(kind, firstNonEmpty(str(params.ToolCall["title"]), str(params.ToolCall["kind"]))); ok {
+	kind := classifyToolName(cmp.Or(str(params.ToolCall["kind"]), str(params.ToolCall["title"])))
+	if d, ok := p.policy.Answer(kind, cmp.Or(str(params.ToolCall["title"]), str(params.ToolCall["kind"]))); ok {
 		outcome := map[string]any{"outcome": "cancelled"}
 		if option := pickACPOption(options, d.Allow); option != "" {
 			outcome = map[string]any{"outcome": "selected", "optionId": option}
@@ -1435,7 +1423,7 @@ func (p *acpProtocol) permissionRequest(msg jsonrpc.Message) []Event {
 		question = "Allow " + title + "?"
 	}
 	return []Event{{Type: EventPermission, Permission: &Permission{
-		ID: id, Tool: firstNonEmpty(str(params.ToolCall["title"]), str(params.ToolCall["kind"])),
+		ID: id, Tool: cmp.Or(str(params.ToolCall["title"]), str(params.ToolCall["kind"])),
 		Kind: kind, Question: question,
 	}}}
 }
