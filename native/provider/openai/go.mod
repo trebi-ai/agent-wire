@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/openai/openai-go/v3 v3.66.0
-	github.com/trebi-ai/agent-wire v0.14.0
+	github.com/trebi-ai/agent-wire v0.15.0
 	github.com/trebi-ai/agent-wire/native v0.2.5
 )
 

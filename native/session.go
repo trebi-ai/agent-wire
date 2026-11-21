@@ -493,8 +493,6 @@ func (s *session) Interrupt(_ context.Context) error {
 	return nil
 }
 
-func (s *session) InterruptTurn(ctx context.Context) error { return s.Interrupt(ctx) }
-
 // AnswerPermission routes a decision to the waiting approver.
 func (s *session) AnswerPermission(ctx context.Context, permissionID string, d agentwire.Decision) error {
 	return s.approvals.decide(permissionID, d)
