@@ -735,7 +735,7 @@ func (s *Session) scan(r io.Reader) {
 		// complete frame would clear.
 		for _, e := range s.adapter.Parse(line) {
 			if len(e.Raw) == 0 {
-				e.Raw = append([]byte(nil), line...)
+				e.Raw = line
 			}
 			if e.Type == EventResult || e.Type == EventError {
 				// Keep the turn of the result before a flush starts the next.
@@ -746,8 +746,10 @@ func (s *Session) scan(r io.Reader) {
 			}
 			s.emit(e)
 		}
-		trimmed := bytes.TrimSpace(line)
-		s.log.write("in", trimmed, s.fragment(trimmed))
+		if s.log != nil {
+			trimmed := bytes.TrimSpace(line)
+			s.log.write("in", trimmed, s.fragment(trimmed))
+		}
 	}
 }
 
@@ -755,7 +757,7 @@ func (s *Session) scan(r io.Reader) {
 // is dropped whole and reported as errFrameTooLarge, so the next frame still
 // parses. A final line without a newline is returned as-is.
 func (s *Session) readFrame(br *bufio.Reader) ([]byte, error) {
-	buf := make([]byte, 0, 4096)
+	var buf []byte
 	overflow := false
 	for {
 		chunk, err := br.ReadSlice('\n')
@@ -763,6 +765,8 @@ func (s *Session) readFrame(br *bufio.Reader) ([]byte, error) {
 			if len(buf)+len(chunk) > s.maxFrame {
 				overflow = true
 				buf = nil
+			} else if buf == nil {
+				buf = bytes.Clone(chunk)
 			} else {
 				buf = append(buf, chunk...)
 			}

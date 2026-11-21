@@ -476,14 +476,14 @@ func (p *claudeProtocol) Fragment(line []byte) bool {
 }
 
 func (p *claudeProtocol) Parse(line []byte) []Event {
-	trimmed := strings.TrimSpace(string(line))
-	if trimmed == "" {
+	trimmed := bytes.TrimSpace(line)
+	if len(trimmed) == 0 {
 		return nil
 	}
-	if !strings.HasPrefix(trimmed, "{") {
+	if trimmed[0] != '{' {
 		// The CLI writes non-JSON diagnostics to stdout; skip them without
 		// failing the wire, but keep the line visible as a status.
-		return []Event{{Type: EventStatus, Text: trimmed, Status: StatusRunning}}
+		return []Event{{Type: EventStatus, Text: string(trimmed), Status: StatusRunning}}
 	}
 	var m map[string]any
 	if err := json.Unmarshal(line, &m); err != nil {

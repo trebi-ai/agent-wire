@@ -1,6 +1,7 @@
 package wire
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -275,5 +276,111 @@ func TestSetIDAndEventSessionID(t *testing.T) {
 	}
 	if s.ID() != "vendor-9" {
 		t.Fatalf("ID() is %q, want the id from the init event", s.ID())
+	}
+}
+
+// countAdapter counts Fragment calls and can return two events per line.
+type countAdapter struct {
+	testAdapter
+	fragments int
+	double    bool
+}
+
+func (a *countAdapter) Fragment(line []byte) bool {
+	a.fragments++
+	return false
+}
+
+func (a *countAdapter) Parse(line []byte) []Event {
+	evs := a.testAdapter.Parse(line)
+	if a.double {
+		evs = append(evs, evs...)
+	}
+	return evs
+}
+
+const threeLines = `{"type":"assistant","text":"a"}` + "\n" +
+	`{"type":"assistant","text":"b"}` + "\n" +
+	`{"type":"assistant","text":"c"}` + "\n"
+
+func TestScanFragmentOnlyWithLog(t *testing.T) {
+	for _, withLog := range []bool{false, true} {
+		ad := &countAdapter{}
+		cfg := Config{}
+		path := filepath.Join(t.TempDir(), "frames.ndjson")
+		if withLog {
+			cfg.LogPath = path
+		}
+		s := NewMemorySession("test", ad, io.Discard, strings.NewReader(threeLines), context.Background(), cfg)
+		collect(t, s)
+		waitDone(t, s)
+		if err := s.Close(context.Background()); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		want := 0
+		if withLog {
+			want = 3
+		}
+		if ad.fragments != want {
+			t.Fatalf("log=%v: Fragment calls = %d, want %d", withLog, ad.fragments, want)
+		}
+		if withLog {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n := bytes.Count(data, []byte(`"in"`)); n != 3 {
+				t.Fatalf("in entries = %d, want 3", n)
+			}
+		}
+	}
+}
+
+func TestScanEventsShareRaw(t *testing.T) {
+	ad := &countAdapter{double: true}
+	s := NewMemorySession("test", ad, io.Discard, strings.NewReader(threeLines), context.Background(), Config{})
+	var raws [][]byte
+	for _, e := range collect(t, s) {
+		if e.Type == EventAssistant {
+			raws = append(raws, e.Raw)
+		}
+	}
+	if len(raws) != 6 {
+		t.Fatalf("assistant events = %d, want 6", len(raws))
+	}
+	if &raws[0][0] != &raws[1][0] || &raws[2][0] != &raws[3][0] {
+		t.Fatal("events of one line do not share Raw")
+	}
+	if &raws[0][0] == &raws[2][0] {
+		t.Fatal("events of different lines share Raw")
+	}
+	if string(raws[0]) != `{"type":"assistant","text":"a"}`+"\n" {
+		t.Fatalf("raw = %q", raws[0])
+	}
+}
+
+func TestReadFrameAllocs(t *testing.T) {
+	line := append(bytes.Repeat([]byte("x"), 199), '\n')
+	s := &Session{maxFrame: DefaultMaxFrameBytes}
+	rd := bytes.NewReader(line)
+	br := bufio.NewReaderSize(rd, 64<<10)
+	n := testing.AllocsPerRun(100, func() {
+		rd.Reset(line)
+		br.Reset(rd)
+		if _, err := s.readFrame(br); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if n > 1 {
+		t.Fatalf("allocs = %v, want at most 1", n)
+	}
+}
+
+func TestReadFrameLongLine(t *testing.T) {
+	line := append(bytes.Repeat([]byte("y"), 200<<10), '\n')
+	s := &Session{maxFrame: DefaultMaxFrameBytes}
+	got, err := s.readFrame(bufio.NewReaderSize(bytes.NewReader(line), 64<<10))
+	if err != nil || !bytes.Equal(got, line) {
+		t.Fatalf("len = %d, err = %v", len(got), err)
 	}
 }

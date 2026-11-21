@@ -793,6 +793,14 @@ func TestClaudeMalformedFrame(t *testing.T) {
 		t.Fatalf("status event = %+v", evs[0])
 	}
 
+	evs = proto.Parse([]byte(" warning: x \n"))
+	if len(evs) != 1 || evs[0].Type != EventStatus || evs[0].Text != "warning: x" {
+		t.Fatalf("padded non-JSON line = %+v", evs)
+	}
+	if evs := proto.Parse([]byte("  \n")); len(evs) != 0 {
+		t.Fatalf("empty line = %+v", evs)
+	}
+
 	evs = proto.Parse([]byte(`{"type":"assistant","message":`))
 	if len(evs) != 1 || evs[0].Type != EventError {
 		t.Fatalf("broken JSON frame = %+v", evs)

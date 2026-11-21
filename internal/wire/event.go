@@ -95,7 +95,8 @@ type Event struct {
 	// ExitCode is set on EventExit.
 	ExitCode *int
 
-	// Raw is the vendor frame, kept for fixtures and the run log.
+	// Raw is the vendor frame, kept for fixtures and the run log. The events of
+	// one frame share the same slice. Do not change it.
 	Raw []byte
 }
 
