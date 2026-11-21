@@ -7,6 +7,10 @@
 # nested modules. A change counts when a non-test .go file, go.mod, or go.sum
 # of the module changed. Nested modules do not count for their parent.
 #
+# A nested module requires a tagged root version. A change in a nested module
+# that needs a new root API lands in two pushes: the root change first, then
+# the require bump.
+#
 # The next version is the patch bump of the last tag. To pick another version,
 # add its heading to CHANGELOG.md, for example "## [v0.4.0]" or
 # "## [native/v0.3.0]". The highest untagged heading above the last tag wins.

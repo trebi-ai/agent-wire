@@ -34,11 +34,23 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      - name: go vet (live)
+        run: go vet -tags live ./live
+
       - name: staticcheck
         run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
 
       - name: go test
         run: go test -race ./...
+
+      - name: nested modules
+        env:
+          GOWORK: "off"
+        run: |
+          set -e
+          for d in native native/provider/anthropic native/provider/openai; do
+            (cd "$d" && go vet ./... && go test -race ./...)
+          done
 
       - name: coverage
         if: runner.os == 'Linux'
