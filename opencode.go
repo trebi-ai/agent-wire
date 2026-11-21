@@ -55,6 +55,10 @@ type openCodeRoute interface {
 // openCodeBase is the transport-agnostic half of an OpenCode session: the event
 // queue, the pump, the terminal bookkeeping and the shared-server refcount. The
 // version-specific half lives in the concrete session type.
+// openCodeQueueLimit is the number of events that one session queues for a slow
+// consumer.
+const openCodeQueueLimit = 16384
+
 type openCodeBase struct {
 	rt      *Runtime
 	srv     *openCodeServer
@@ -72,6 +76,9 @@ type openCodeBase struct {
 	queueMu     sync.Mutex
 	queue       []Event
 	queueClosed bool
+	// dropping is true from the first dropped event until the pump takes the
+	// queue.
+	dropping    bool
 	finishOnce  sync.Once
 	releaseOnce sync.Once
 	sawResult   bool
@@ -189,7 +196,8 @@ func (b *openCodeBase) Err() error {
 }
 
 // deliver queues events for the session pump. It never blocks the shared event
-// stream, whatever the consumer is doing.
+// stream, whatever the consumer is doing. Past openCodeQueueLimit it drops
+// content events and queues one marker per overflow. Control events are kept.
 func (b *openCodeBase) deliver(evs []Event) {
 	if len(evs) == 0 {
 		return
@@ -199,12 +207,34 @@ func (b *openCodeBase) deliver(evs []Event) {
 		b.queueMu.Unlock()
 		return
 	}
-	b.queue = append(b.queue, evs...)
+	for _, ev := range evs {
+		if len(b.queue) >= openCodeQueueLimit && !openCodeControlEvent(ev.Type) {
+			if !b.dropping {
+				b.dropping = true
+				b.queue = append(b.queue, Event{
+					Type: EventError, Code: CodeEventsDropped,
+					Error: fmt.Sprintf("%s: the consumer reads too slowly; events were dropped", b.harness),
+				})
+			}
+			continue
+		}
+		b.queue = append(b.queue, ev)
+	}
 	b.queueMu.Unlock()
 	select {
 	case b.notify <- struct{}{}:
 	default:
 	}
+}
+
+// openCodeControlEvent reports whether a consumer needs the event to answer a
+// permission or to see the end of a turn or of the session.
+func openCodeControlEvent(t EventType) bool {
+	switch t {
+	case EventAssistant, EventThought, EventUser, EventTool, EventUsage, EventLimits:
+		return false
+	}
+	return true
 }
 
 // pump moves queued events to the consumer channel.
@@ -215,6 +245,7 @@ func (b *openCodeBase) pump() {
 		b.queueMu.Lock()
 		batch := b.queue
 		b.queue = nil
+		b.dropping = false
 		b.queueMu.Unlock()
 		for _, ev := range batch {
 			if b.send(ev) {
@@ -465,30 +496,12 @@ func (d openCodeDriver) start(ctx context.Context, req StartRequest, resume bool
 		return nil, err
 	}
 	dir := req.WorkingDir
-	// Subscribe to the directory's event stream before the session exists:
-	// OpenCode drops every event published before a stream is connected, and
-	// the caller cannot prompt until this call returns.
-	srv.ensureStreamReady(ctx, dir)
-	sessionID := req.SessionID
-	if sessionID != "" {
-		var info map[string]any
-		if err := srv.call(ctx, "GET", "/session/"+sessionID, dir, nil, &info); err != nil {
-			d.rt.oc.release(srv)
-			return nil, fmt.Errorf("%w: opencode session %s: %v", ErrResumeUnsupported, sessionID, err)
-		}
-	} else {
-		var res struct {
-			ID string `json:"id"`
-		}
-		if err := srv.call(ctx, "POST", "/session", dir, map[string]any{}, &res); err != nil {
-			d.rt.oc.release(srv)
-			return nil, fmt.Errorf("opencode session create: %w", err)
-		}
-		sessionID = res.ID
-	}
-	if sessionID == "" {
+	// OpenCode drops the events that it publishes before a stream connects, so
+	// openSession waits for the stream.
+	sessionID, err := srv.openSession(ctx, dir, req.SessionID, map[string]any{})
+	if err != nil {
 		d.rt.oc.release(srv)
-		return nil, errors.New("opencode: session has no id")
+		return nil, err
 	}
 	s := &openCodeSession{
 		openCodeBase: newOpenCodeBase(d.rt, srv, sessionID, dir, openCodeV1{}),

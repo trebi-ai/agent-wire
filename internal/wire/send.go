@@ -23,6 +23,10 @@ const (
 // dropped, because the process exited before the turn ended.
 const CodeHeldPromptDropped = "held_prompt_dropped"
 
+// CodeEventsDropped is the error code of the event that marks dropped content
+// events. A session emits it when the consumer reads too slowly.
+const CodeEventsDropped = "events_dropped"
+
 // ErrNoActiveTurn reports a Steer with no running turn.
 var ErrNoActiveTurn = errors.New("agentwire: no active turn")
 

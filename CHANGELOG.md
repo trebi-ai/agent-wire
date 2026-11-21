@@ -8,8 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `CodeEventsDropped`, the code of the `EventError` that marks dropped content events.
 - `HookRecipe`, `HookEvent`, `Hooks`, `HookHarnesses`, and the `Hook*` event name and payload constants. The facts cover Claude Code and Codex.
 - `StartRequest` has JSON tags. The JSON form leaves out `Credentials`, `FS`, and `OnStderr`.
+
+### Changed
+
+- An OpenCode session queues at most 16384 content events for a slow consumer. Past the limit, it drops content events and emits one `EventError` with code `events_dropped`. It never drops control events.
+
+### Fixed
+
+- An OpenCode session open fails when the event stream does not connect. Before, the session could lose its first events.
 
 ### Removed
 

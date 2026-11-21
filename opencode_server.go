@@ -256,6 +256,33 @@ func (s *openCodeServer) ensureStreamReady(ctx context.Context, directory string
 	}
 }
 
+// openSession waits for the event stream of dir, then checks the session id on
+// a resume or creates a session with the create body. The caller releases the
+// server on an error.
+func (s *openCodeServer) openSession(ctx context.Context, dir, id string, create map[string]any) (string, error) {
+	h := s.wire.harness()
+	if err := s.ensureStreamReady(ctx, dir); err != nil {
+		return "", fmt.Errorf("%s: event stream: %w", h, err)
+	}
+	if id != "" {
+		var info map[string]any
+		if err := s.call(ctx, "GET", "/session/"+id, dir, nil, &info); err != nil {
+			return "", fmt.Errorf("%w: %s session %s: %v", ErrResumeUnsupported, h, id, err)
+		}
+		return id, nil
+	}
+	var res struct {
+		ID string `json:"id"`
+	}
+	if err := s.call(ctx, "POST", "/session", dir, create, &res); err != nil {
+		return "", fmt.Errorf("%s session create: %w", h, err)
+	}
+	if res.ID == "" {
+		return "", fmt.Errorf("%s: session has no id", h)
+	}
+	return res.ID, nil
+}
+
 // streamLoop keeps one /event connection alive and routes frames by session.
 func (s *openCodeServer) streamLoop(ctx context.Context, directory string, st *openCodeStream) {
 	backoff := openCodeStreamRetryMin

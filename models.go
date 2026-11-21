@@ -82,6 +82,10 @@ const (
 // reached the vendor, because the session ended first. Text holds them.
 const CodeHeldPromptDropped = wire.CodeHeldPromptDropped
 
+// CodeEventsDropped is the error code of the event that marks dropped content
+// events. A session emits it when the consumer reads too slowly.
+const CodeEventsDropped = wire.CodeEventsDropped
+
 // Sender is the session capability behind Send.
 type Sender interface {
 	Send(ctx context.Context, p Prompt) (Delivery, error)

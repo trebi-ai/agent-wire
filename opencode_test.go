@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -515,5 +516,108 @@ func TestOpenCodeReasoningPart(t *testing.T) {
 		if ev.Type == EventThought {
 			t.Fatalf("the ended part went out again: %+v", ev)
 		}
+	}
+}
+
+// coaTestDeadStream serves a stream that never connects and counts the session
+// creates.
+func coaTestDeadStream(t *testing.T, w openCodeWire) (*openCodeServer, *int32) {
+	t.Helper()
+	var posts int32
+	ts := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			atomic.AddInt32(&posts, 1)
+		}
+		rw.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(ts.Close)
+	u, _ := url.Parse(ts.URL)
+	port, _ := strconv.Atoi(u.Port())
+	s := &openCodeServer{
+		port: port, username: "u", password: "p", rt: coaTestRuntime(), wire: w,
+		sessions: map[string]openCodeRoute{},
+	}
+	t.Cleanup(s.stop)
+	return s, &posts
+}
+
+func TestOpenCodeOpenSessionStreamFails(t *testing.T) {
+	s, posts := coaTestDeadStream(t, openCodeV1{})
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	_, err := s.openSession(ctx, t.TempDir(), "", map[string]any{})
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.HasPrefix(err.Error(), "opencode: event stream:") {
+		t.Fatalf("err = %v", err)
+	}
+	if n := atomic.LoadInt32(posts); n != 0 {
+		t.Fatalf("session creates = %d, want 0", n)
+	}
+}
+
+func TestOpenCodeOpenSessionCreate(t *testing.T) {
+	oc := coaTestNewOpenCode(t, coaTestRuntime())
+	id, err := oc.route.openSession(context.Background(), t.TempDir(), "", map[string]any{})
+	if err != nil || id != "s1" {
+		t.Fatalf("id = %q, err = %v", id, err)
+	}
+	oc.sse.wait(t)
+}
+
+func TestOpenCodeOpenSessionResume(t *testing.T) {
+	oc := coaTestNewOpenCode(t, coaTestRuntime())
+	dir := t.TempDir()
+	id, err := oc.route.openSession(context.Background(), dir, "s1", nil)
+	if err != nil || id != "s1" {
+		t.Fatalf("id = %q, err = %v", id, err)
+	}
+	_, err = oc.route.openSession(context.Background(), dir, "missing", nil)
+	if !errors.Is(err, ErrResumeUnsupported) {
+		t.Fatalf("err = %v, want ErrResumeUnsupported", err)
+	}
+}
+
+func coaTestAssistants(n int) []Event {
+	evs := make([]Event, n)
+	for i := range evs {
+		evs[i] = Event{Type: EventAssistant, Text: "x"}
+	}
+	return evs
+}
+
+func TestOpenCodeQueueLimit(t *testing.T) {
+	b := newOpenCodeBase(coaTestRuntime(), nil, "s1", "", openCodeV1{})
+	b.deliver(coaTestAssistants(openCodeQueueLimit + 10))
+	b.deliver([]Event{{Type: EventPermission}, {Type: EventExit}})
+	if got, want := len(b.queue), openCodeQueueLimit+3; got != want {
+		t.Fatalf("queue = %d, want %d", got, want)
+	}
+	m := b.queue[openCodeQueueLimit]
+	if m.Type != EventError || m.Code != CodeEventsDropped || m.EndReason != "" {
+		t.Fatalf("marker = %+v", m)
+	}
+	if b.queue[openCodeQueueLimit+1].Type != EventPermission || b.queue[openCodeQueueLimit+2].Type != EventExit {
+		t.Fatalf("control events out of order: %v, %v", b.queue[openCodeQueueLimit+1].Type, b.queue[openCodeQueueLimit+2].Type)
+	}
+}
+
+func TestOpenCodeQueueLimitResets(t *testing.T) {
+	b := newOpenCodeBase(coaTestRuntime(), nil, "s1", "", openCodeV1{})
+	go b.pump()
+	defer close(b.pumpStop)
+	markers := 0
+	for round := 0; round < 2; round++ {
+		// One call, so the pump sees the whole overflow in one queue.
+		b.deliver(append(coaTestAssistants(openCodeQueueLimit+10), Event{Type: EventStatus, Text: "end"}))
+		for ev := range b.events {
+			if ev.Code == CodeEventsDropped {
+				markers++
+			}
+			if ev.Type == EventStatus {
+				break
+			}
+		}
+	}
+	if markers != 2 {
+		t.Fatalf("markers = %d, want 2", markers)
 	}
 }

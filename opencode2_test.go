@@ -853,3 +853,13 @@ func TestOpenCodeWrongWireFailsFast(t *testing.T) {
 		t.Fatalf("took %s", time.Since(start))
 	}
 }
+
+func TestOpenCode2OpenSessionPrefix(t *testing.T) {
+	s, _ := coaTestDeadStream(t, openCode2{})
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	_, err := s.openSession(ctx, t.TempDir(), "", nil)
+	if err == nil || !strings.HasPrefix(err.Error(), "opencode2: event stream:") {
+		t.Fatalf("err = %v", err)
+	}
+}

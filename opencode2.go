@@ -3,7 +3,6 @@ package agentwire
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -122,19 +121,10 @@ func (d openCode2Driver) open(ctx context.Context, req StartRequest, l *launch) 
 		return nil, err
 	}
 	dir := req.WorkingDir
-	// V2 streams every location on one connection, so the stream is opened once
-	// per server, before the session exists. Events published before a stream
-	// is connected are not replayed.
-	srv.ensureStreamReady(ctx, dir)
-	sessionID := req.SessionID
-	if sessionID != "" {
-		var info map[string]any
-		if err := srv.call(ctx, "GET", "/session/"+sessionID, dir, nil, &info); err != nil {
-			d.rt.oc.release(srv)
-			return nil, fmt.Errorf("%w: opencode2 session %s: %v", ErrResumeUnsupported, sessionID, err)
-		}
-	} else {
-		body := map[string]any{"location": map[string]any{"directory": dir}}
+	// V2 opens one stream per server, so openSession waits for it.
+	var body map[string]any
+	if req.SessionID == "" {
+		body = map[string]any{"location": map[string]any{"directory": dir}}
 		model := req.Model
 		if model == "" {
 			model = openCode2DefaultModel()
@@ -142,18 +132,11 @@ func (d openCode2Driver) open(ctx context.Context, req StartRequest, l *launch) 
 		if ref := openCode2ModelRef(model, req.Effort); ref != nil {
 			body["model"] = ref
 		}
-		var res struct {
-			ID string `json:"id"`
-		}
-		if err := srv.call(ctx, "POST", "/session", dir, body, &res); err != nil {
-			d.rt.oc.release(srv)
-			return nil, fmt.Errorf("opencode2 session create: %w", err)
-		}
-		sessionID = res.ID
 	}
-	if sessionID == "" {
+	sessionID, err := srv.openSession(ctx, dir, req.SessionID, body)
+	if err != nil {
 		d.rt.oc.release(srv)
-		return nil, errors.New("opencode2: session has no id")
+		return nil, err
 	}
 	s := &openCode2Session{
 		openCodeBase: newOpenCodeBase(d.rt, srv, sessionID, dir, openCode2{}),
