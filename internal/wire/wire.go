@@ -600,10 +600,11 @@ func (s *Session) AnswerPermission(ctx context.Context, permissionID string, d D
 	return s.WriteFrame(frame)
 }
 
-// InterruptTurn sends the protocol interrupt when the adapter has one, else a
+// Interrupt sends the protocol interrupt when the adapter has one, else a
 // graceful signal to the process group. The session survives a protocol
 // interrupt; a signal-based interrupt asks the child to stop the turn itself.
-func (s *Session) InterruptTurn(ctx context.Context) error {
+// It gives ErrUnsupported when neither is possible.
+func (s *Session) Interrupt(ctx context.Context) error {
 	if ie, ok := s.adapter.(InterruptEncoder); ok {
 		frame, err := ie.EncodeInterrupt()
 		if err != nil {
@@ -617,10 +618,6 @@ func (s *Session) InterruptTurn(ctx context.Context) error {
 	s.proc.SignalGroup(proc.TermSignal())
 	return nil
 }
-
-// Interrupt is the Session method: a protocol interrupt where available, a
-// signal otherwise.
-func (s *Session) Interrupt(ctx context.Context) error { return s.InterruptTurn(ctx) }
 
 // ErrUnsupported reports a capability the harness or protocol does not have.
 var ErrUnsupported = errors.New("agentwire: unsupported by this harness")

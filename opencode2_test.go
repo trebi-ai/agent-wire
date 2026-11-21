@@ -721,14 +721,11 @@ func TestOpenCode2InterruptRoute(t *testing.T) {
 	if err := sess.Interrupt(context.Background()); err != nil {
 		t.Fatalf("interrupt: %v", err)
 	}
-	if err := sess.InterruptTurn(context.Background()); err != nil {
-		t.Fatalf("interrupt turn: %v", err)
-	}
 	oc.mu.Lock()
 	got := oc.interrupts
 	oc.mu.Unlock()
-	if got != 2 {
-		t.Fatalf("interrupts: %d, want 2", got)
+	if got != 1 {
+		t.Fatalf("interrupts: %d, want 1", got)
 	}
 }
 

@@ -2,8 +2,13 @@ package agentwire
 
 import (
 	"context"
+	"encoding/json"
+	"maps"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestRuntimeZeroOptionsIsUsable covers New with no options: every listed
@@ -135,5 +140,70 @@ func TestRuntimeCloseIsIdempotent(t *testing.T) {
 	}
 	if err := rt.Close(ctx); err != nil {
 		t.Fatalf("second Close: %v", err)
+	}
+}
+
+type jsonTestFS struct{}
+
+func (jsonTestFS) ReadTextFile(context.Context, string) (string, error) { return "", nil }
+func (jsonTestFS) WriteTextFile(context.Context, string, string) error  { return nil }
+
+// TestStartRequestJSON pins the JSON field names and the three fields that the
+// JSON form leaves out.
+func TestStartRequestJSON(t *testing.T) {
+	t.Parallel()
+	req := StartRequest{
+		Harness:          Claude,
+		Binary:           "/bin/claude",
+		WorkingDir:       "/work",
+		Env:              map[string]string{"A": "b"},
+		Home:             "/home",
+		SessionID:        "s1",
+		Model:            "m",
+		Effort:           "high",
+		Permissions:      PermissionPolicy{Mode: PermissionMode("ask")},
+		MCPServers:       []MCPServer{{Name: "x"}},
+		Skills:           []Skill{{Name: "y"}},
+		Instructions:     "be brief",
+		Credentials:      &Credentials{APIKey: "secret"},
+		OneShot:          true,
+		OneShotPrompt:    "go",
+		HandshakeTimeout: time.Second,
+		ExtraArgs:        []string{"--x"},
+		BaseCommand:      []string{"claude"},
+		Raw:              map[string]any{"strict_mcp": true},
+		LogPath:          "/log",
+		FragmentLogPath:  "/frag",
+		LogFragments:     true,
+		FS:               jsonTestFS{},
+		OnStderr:         func(Harness, string) {},
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(data, &keys); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"harness", "binary", "working_dir", "env", "home", "session_id", "model", "effort",
+		"permissions", "mcp_servers", "skills", "instructions", "one_shot", "one_shot_prompt",
+		"handshake_timeout", "extra_args", "base_command", "raw", "frame_log", "fragment_log",
+		"log_fragments",
+	}
+	got := slices.Sorted(maps.Keys(keys))
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("keys = %v, want %v", got, want)
+	}
+
+	var back StartRequest
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatal(err)
+	}
+	req.Credentials, req.FS, req.OnStderr = nil, nil, nil
+	if !reflect.DeepEqual(back, req) {
+		t.Errorf("round trip = %+v, want %+v", back, req)
 	}
 }

@@ -115,10 +115,6 @@ type Session interface {
 	Interrupt(ctx context.Context) error
 	// AnswerPermission routes a decision to the vendor.
 	AnswerPermission(ctx context.Context, permissionID string, d Decision) error
-	// InterruptTurn is the protocol-level interrupt. It is the same call as
-	// Interrupt for every built-in driver, and is kept for callers that want
-	// to be explicit about not falling back to a signal.
-	InterruptTurn(ctx context.Context) error
 	// Done is closed when the session has ended and Events is drained.
 	Done() <-chan struct{}
 	// Err is the first failure the session recorded, if any.
@@ -146,67 +142,68 @@ type FileSystem interface {
 }
 
 // StartRequest describes one session. The caller describes; the library builds
-// the command.
+// the command. The JSON form leaves out the credentials, the file system and
+// the stderr hook.
 type StartRequest struct {
-	Harness Harness
+	Harness Harness `json:"harness"`
 	// Binary is the executable. Empty searches PATH.
-	Binary     string
-	WorkingDir string
+	Binary     string `json:"binary,omitempty"`
+	WorkingDir string `json:"working_dir,omitempty"`
 	// Env is added to the parent environment and wins on conflict.
-	Env map[string]string
+	Env map[string]string `json:"env,omitempty"`
 	// Home is an optional isolated config home. Empty uses the user's own
 	// configuration, including their login, MCP servers and skills.
-	Home string
+	Home string `json:"home,omitempty"`
 
 	// SessionID is a resume target, or a pre-assigned id where the harness
 	// allows one.
-	SessionID string
+	SessionID string `json:"session_id,omitempty"`
 	// Model is the vendor model name. Empty uses the vendor default.
-	Model string
+	Model string `json:"model,omitempty"`
 	// Effort is one of low, medium, high, max. Empty uses the vendor default.
-	Effort string
+	Effort string `json:"effort,omitempty"`
 
-	Permissions  PermissionPolicy
-	MCPServers   []MCPServer
-	Skills       []Skill
-	Instructions string
+	Permissions  PermissionPolicy `json:"permissions"`
+	MCPServers   []MCPServer      `json:"mcp_servers,omitempty"`
+	Skills       []Skill          `json:"skills,omitempty"`
+	Instructions string           `json:"instructions,omitempty"`
 
 	// Credentials carries the provider credentials for the native harness
 	// only. The library never reads env or secrets to fill it, and the CLI
 	// drivers ignore it.
-	Credentials *Credentials
+	Credentials *Credentials `json:"-"`
 
 	// OneShot writes OneShotPrompt and closes stdin, so the child exits after
 	// the turn. Use it for a job with no follow-up surface.
-	OneShot       bool
-	OneShotPrompt string
+	OneShot       bool   `json:"one_shot,omitempty"`
+	OneShotPrompt string `json:"one_shot_prompt,omitempty"`
 	// HandshakeTimeout overrides the protocol handshake wait.
-	HandshakeTimeout time.Duration
+	HandshakeTimeout time.Duration `json:"handshake_timeout,omitempty"`
 
 	// ExtraArgs is appended verbatim after the library's own arguments. Use
 	// it for consumer flags such as --settings or -c notify=...
-	ExtraArgs []string
+	ExtraArgs []string `json:"extra_args,omitempty"`
 	// BaseCommand is an expert override: when it is set the launch builder is
 	// skipped and the command is used as-is.
-	BaseCommand []string
+	BaseCommand []string `json:"base_command,omitempty"`
 	// Raw carries per-harness overrides the typed fields do not cover:
 	// "strict_mcp" (bool, Claude), "acp_auth_method" (string), "approvalPolicy"
 	// and "sandbox" (string, Codex), "auth_method" (string, ACP).
-	Raw map[string]any
+	Raw map[string]any `json:"raw,omitempty"`
 
 	// LogPath writes the frames in and out as NDJSON. Secrets are not
 	// redacted, so the file is created mode 0600. Stream fragments that a
 	// later complete frame repeats are left out unless LogFragments is set.
-	LogPath string
+	LogPath string `json:"frame_log,omitempty"`
 	// FragmentLogPath gets the buffered fragments of the open message when
 	// the stream fails or ends before the complete message. Empty drops them.
-	FragmentLogPath string
+	FragmentLogPath string `json:"fragment_log,omitempty"`
 	// LogFragments writes every stream fragment to LogPath (debug).
-	LogFragments bool
+	LogFragments bool `json:"log_fragments,omitempty"`
 	// FS is the optional ACP file-system adapter.
-	FS FileSystem
+	FS FileSystem `json:"-"`
 	// OnStderr receives live stderr lines from this child.
-	OnStderr func(Harness, string)
+	OnStderr func(Harness, string) `json:"-"`
 }
 
 // RawBool reads a boolean override.

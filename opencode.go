@@ -624,9 +624,6 @@ func (s *openCodeSession) Interrupt(ctx context.Context) error {
 	return s.srv.call(ctx, "POST", "/session/"+s.id+"/abort", s.dir, map[string]any{}, nil)
 }
 
-// InterruptTurn is the protocol interrupt.
-func (s *openCodeSession) InterruptTurn(ctx context.Context) error { return s.Interrupt(ctx) }
-
 // parse maps one OpenCode bus event to normalized events.
 func (s *openCodeSession) parse(typ string, props map[string]any) []Event {
 	switch typ {

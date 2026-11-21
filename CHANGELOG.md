@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.15.0] - 2026-11-20
+
+### Added
+
+- `HookRecipe`, `HookEvent`, `Hooks`, `HookHarnesses`, and the `Hook*` event name and payload constants. The facts cover Claude Code and Codex.
+- `StartRequest` has JSON tags. The JSON form leaves out `Credentials`, `FS`, and `OnStderr`.
+
+### Removed
+
+- Breaking: `Session.InterruptTurn`. Call `Interrupt`. A consumer type that implements `Session` can keep the method. It is no longer part of the interface.
+
 ## [v0.14.0] - 2026-11-14
 
 ### Changed

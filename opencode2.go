@@ -299,9 +299,6 @@ func (s *openCode2Session) Interrupt(ctx context.Context) error {
 	return s.srv.call(ctx, "POST", "/session/"+s.id+"/interrupt", s.dir, nil, nil)
 }
 
-// InterruptTurn is the protocol interrupt.
-func (s *openCode2Session) InterruptTurn(ctx context.Context) error { return s.Interrupt(ctx) }
-
 // openCode2InstructionKey is the per-session instruction entry this library
 // owns. V2 keys are lowercase alphanumerics plus . _ -.
 const openCode2InstructionKey = "agentwire.instructions"
